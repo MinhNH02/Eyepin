@@ -48,6 +48,18 @@ việc mới phát sinh thì thêm vào đúng nhóm, đừng để file lệch 
 - CVAT local (`http://localhost:8080`) chứa dữ liệu công khai: được thử nghiệm, xem ảnh, ghi tự do. Server công ty
   thì không tự ghi, không điều khiển trình duyệt vào đó.
 
+## Quy ước git (người dùng chốt 2026-11-16)
+
+- **Nhánh:** `main` là nhánh phát hành và được bảo vệ: không push trực tiếp, không force push, không xoá. Thay đổi chỉ vào `main` qua pull request từ `develop`. `develop` là nhánh phát triển: làm việc và commit hằng ngày diễn ra ở đây. Việc lớn cần PR riêng thì tạo nhánh con từ `develop`: `feature/<tên-ngắn>`, `fix/<tên-ngắn>`, `docs/…`, `refactor/…`, `test/…` (chữ thường, gạch nối).
+- **Commit theo Conventional Commits:** `<type>(<phạm vi>): <mô tả>`.
+  - `type` viết thường, một trong: `feat`, `fix`, `docs`, `refactor`, `test`, `perf`, `style`, `build`, `ci`, `chore`, `revert`.
+  - `phạm vi` là module hoặc khu vực: `geometry`, `cvatxml`, `cvat`, `session`, `gui`, `render`, `tracking`, `headturn`, `scan`, `icons`, `shortcuts`, `tests`, `docs`. Có thể bỏ nếu thay đổi trải nhiều nơi.
+  - `mô tả`: động từ ở đầu, không dấu chấm cuối, tối đa 72 ký tự, viết tiếng Việt có dấu.
+  - Thân commit (khi cần): giải thích **vì sao** thay đổi, xuống dòng quanh 72 ký tự, cách tiêu đề một dòng trống.
+  - Thay đổi phá vỡ tương thích: thêm `!` sau phạm vi (ví dụ `feat(cvat)!: ...`) và dòng `BREAKING CHANGE: ...` trong thân.
+- **Mỗi commit một mục đích.** Không gộp sửa lỗi với đổi định dạng trong cùng commit.
+- Không commit dữ liệu, ảnh, guideline công ty, `.superpowers/`, `.archify/` hay cache (đã chặn trong `.gitignore`); không dùng `git add -f` để lách.
+
 ## Những điều về CVAT phải nắm (đã kiểm trên bản 2.75)
 
 Chi tiết và vị trí dòng mã: `design/cvat-keyframe-behaviour.md`.
