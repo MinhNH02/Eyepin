@@ -99,6 +99,9 @@ ACTIONS: tuple[Action, ...] = (
     Action("marker_up", G_VIEW, "Điểm to hơn", ("<bracketright>",), "", "CVAT chỉnh trong Settings"),
     Action("marker_down", G_VIEW, "Điểm nhỏ hơn", ("<bracketleft>",), ""),
     Action("swap_top", G_VIEW, "Đổi mắt nằm trên", ("T",), "+ / -", "CVAT: đưa đối tượng lên/xuống lớp"),
+    Action("image_setups", G_VIEW, "Mở Image setups (lưới, độ sáng, tương phản, bão hoà, gamma)", ("<Control-g>",), "",
+           "CVAT: nút ^ giữa mép dưới khung ảnh"),
+    Action("grid", G_VIEW, "Bật/tắt lưới ảnh", ("g",), "", "CVAT: ô Image grid trong Image setups"),
 )
 BY_ID = {a.id: a for a in ACTIONS}
 

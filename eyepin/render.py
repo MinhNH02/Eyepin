@@ -41,6 +41,7 @@ class Look:
     grid_size: int = 100         # pixel ảnh, 1..1000 (CVAT 5..1000); tự thưa khi thu nhỏ (imagefx.grid_step)
     grid_color: str = "White"    # một khoá của imagefx.GRID_COLORS
     grid_opacity: float = 100.0  # %, 0..100
+    axis_guide: bool = False     # thước theo trục mắt đang chọn (vạch tỉ lệ guideline v1.3 mục 3.3)
     smooth: bool = True          # làm mịn ảnh khi phóng to (tắt thì thấy từng pixel)
     bg: tuple = (40, 40, 40)     # màu nền ngoài ảnh (BGR)
     selected_opacity: float = 1.0   # độ đặc riêng của mắt đang chọn

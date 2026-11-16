@@ -36,7 +36,7 @@ from .cvatapi import CvatError
 from .gui_cvat import CvatMixin, edit_command, net_safe
 from .gui_frames import FramesMixin
 from .gui_objects import LayerSet, ObjectsMixin
-from .icons import IconButton
+from .icons import IconButton, Tooltip
 from .session import Session
 
 MAIN = (960, 460)
@@ -44,7 +44,7 @@ THUMB = (300, 140)
 PIN_SEQ = [(label, pid) for label, spec in EYES.items() for pid in spec.pins]       # 8 điểm (chỉ dùng để đếm và cho test)
 PIN_COUNT = {"full": 8, "hidden": 7, "one": 4, "draw4": 4}
 DRAW_LABELS = {"mattrai": "mattrai (mắt trái)", "matphai": "matphai (mắt phải)"}
-DISPLAY_KEYS = ("size", "opacity", "brightness", "contrast", "saturation", "gamma", "grid", "grid_size", "grid_color", "grid_opacity", "top", "outline", "points", "ids", "selected_opacity", "color_by",
+DISPLAY_KEYS = ("size", "opacity", "brightness", "contrast", "saturation", "gamma", "grid", "grid_size", "grid_color", "grid_opacity", "axis_guide", "top", "outline", "points", "ids", "selected_opacity", "color_by",
                 "outlined")
 
 
@@ -241,8 +241,10 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         view_menu.add_separator()
         view_menu.add_command(label=f"Ẩn/hiện toàn bộ nhãn ({self.kl('hide_all')})", command=self.toggle_labels)
         view_menu.add_command(label=f"Đổi mắt nằm trên ({self.kl('swap_top')})", command=self.swap_top)
-        view_menu.add_command(label="Cỡ điểm, độ đặc, độ sáng…", command=self.show_display_dialog)
-        self.view_btn = IconButton(top, "display", popup(view_menu), tip="Lớp, cỡ điểm, độ sáng", caption="Hiển thị", kind="bar")
+        view_menu.add_command(label="Cỡ điểm, độ đặc…", command=self.show_display_dialog)
+        view_menu.add_command(label=f"Image setups: lưới, độ sáng, gamma… ({self.kl('image_setups')})", command=self.show_image_setups)
+        view_menu.add_command(label=f"Bật/tắt lưới ({self.kl('grid')})", command=self.toggle_grid)
+        self.view_btn = IconButton(top, "display", popup(view_menu), tip="Lớp, cỡ điểm, lưới, độ sáng", caption="Hiển thị", kind="bar")
         self.fullscreen_btn = B("fullscreen", self.toggle_fullscreen, f"Toàn màn hình ({self.kl('fullscreen')})", caption="Toàn màn hình")
         self.filter_btn = IconButton(top, "filter", popup(flt_menu), caption="Lọc", kind="bar",
                                      tip=lambda: f"Lọc frame (đang: {Session.FILTERS[self.filter]}). {self.kl('search_prev')}/{self.kl('search_next')} nhảy tới frame thoả")
@@ -368,6 +370,10 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.timeline.pack(padx=6, pady=4)
         self.timeline.bind("<Button-1>", self.on_timeline)
         self._build_display_dialog()
+        self._build_image_setups()
+        self.setups_btn = ttk.Button(self.canvas, text="^", width=3, command=self.show_image_setups)   # như CVAT: giữa mép dưới khung ảnh
+        self.setups_btn.place(relx=0.5, rely=1.0, y=-2, anchor="s")
+        Tooltip(self.setups_btn, f"Image setups: lưới, độ sáng, tương phản, bão hoà, gamma ({self.kl('image_setups')})")
 
     def _build_display_dialog(self):
         """Hộp chứa các thanh trượt hiển thị (cỡ điểm, độ đặc, độ sáng, tương phản, bão hoà); ẩn khi chưa mở."""
@@ -378,9 +384,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self._display_dlg = dlg
         self._adj_vars = {}
         rows = (("size", f"Cỡ điểm ({self.kl('marker_down')} {self.kl('marker_up')})", 0.4, 3.0, 1.0), ("opacity", "Độ đặc nhãn", 0.15, 1.0, 1.0),
-                ("selected_opacity", "Độ đặc mắt đang chọn", 0.15, 1.0, 1.0),
-                *((n, text, *imagefx.COLOR_RANGES[n], imagefx.COLOR_DEFAULTS[n])
-                  for n, text in (("brightness", "Độ sáng (%)"), ("contrast", "Tương phản (%)"), ("saturation", "Bão hoà (%)"), ("gamma", "Gamma"))))
+                ("selected_opacity", "Độ đặc mắt đang chọn", 0.15, 1.0, 1.0))      # độ sáng, tương phản, bão hoà, gamma: hộp Image setups
         for r, (name, text, lo, hi, init) in enumerate(rows):
             ttk.Label(dlg, text=text).grid(row=r, column=0, sticky="w", padx=8, pady=3)
             v = tk.DoubleVar(value=init)
@@ -418,6 +422,98 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
     def show_display_dialog(self):
         self._display_dlg.deiconify()
         self._display_dlg.lift()
+
+    # ---- hộp Image setups (như CVAT: nút ^ giữa mép dưới khung ảnh) ----
+    SETUP_RANGES = {**imagefx.COLOR_RANGES, "grid_size": imagefx.GRID_SIZE_RANGE, "grid_opacity": (0, 100)}
+
+    def _build_image_setups(self):
+        """Hộp lưới và màu ảnh, dựng sẵn và ẩn (như hộp Chỉnh hiển thị); `_setup_vars` có từ đầu để phím g và Reset đồng bộ được."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Image setups")
+        dlg.withdraw()
+        dlg.protocol("WM_DELETE_WINDOW", dlg.withdraw)
+        dlg.transient(self.root)
+        dlg.bind("<Escape>", lambda e: dlg.withdraw())
+        self._setups_dlg = dlg
+        v = self._setup_vars = {"grid": tk.BooleanVar(value=self.look.grid), "grid_size": tk.IntVar(value=self.look.grid_size),
+                                "grid_color": tk.StringVar(value=self.look.grid_color), "grid_opacity": tk.DoubleVar(value=self.look.grid_opacity),
+                                "axis_guide": tk.BooleanVar(value=self.look.axis_guide),
+                                **{n: tk.DoubleVar(value=getattr(self.look, n)) for n in imagefx.COLOR_DEFAULTS}}
+        g = ttk.LabelFrame(dlg, text="Image grid", padding=8)
+        g.grid(row=0, column=0, sticky="we", padx=8, pady=(8, 4))
+        ttk.Checkbutton(g, text=f"Bật lưới ({self.kl('grid')})", variable=v["grid"],
+                        command=lambda: self._apply_setup("grid", v["grid"].get())).grid(row=0, column=0, sticky="w")
+        ttk.Label(g, text="Size (px ảnh)").grid(row=0, column=1, padx=(12, 4))
+        lo, hi = imagefx.GRID_SIZE_RANGE
+        size = ttk.Spinbox(g, from_=lo, to=hi, increment=1, width=6, textvariable=v["grid_size"],
+                           command=lambda: self._apply_setup("grid_size", self._var_value("grid_size")))
+        size.grid(row=0, column=2)
+        for ev in ("<Return>", "<FocusOut>"):
+            size.bind(ev, lambda e: self._apply_setup("grid_size", self._var_value("grid_size")))
+        ttk.Label(g, text="Màu").grid(row=0, column=3, padx=(12, 4))
+        color = ttk.Combobox(g, values=list(imagefx.GRID_COLORS), textvariable=v["grid_color"], state="readonly", width=7)
+        color.grid(row=0, column=4)
+        color.bind("<<ComboboxSelected>>", lambda e: self._apply_setup("grid_color", v["grid_color"].get()))
+        ttk.Label(g, text="Opacity").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        tk.Scale(g, from_=0, to=100, resolution=1, orient="horizontal", length=260, variable=v["grid_opacity"],
+                 command=lambda val: self._apply_setup("grid_opacity", val)).grid(row=1, column=1, columnspan=4, sticky="we")
+        ttk.Checkbutton(g, text="Thước theo trục mắt (mắt đang chọn, vạch tỉ lệ guideline)", variable=v["axis_guide"],
+                        command=lambda: self._apply_setup("axis_guide", v["axis_guide"].get())).grid(row=2, column=0, columnspan=5, sticky="w", pady=(6, 0))
+        c = ttk.LabelFrame(dlg, text="Color settings", padding=8)
+        c.grid(row=1, column=0, sticky="we", padx=8, pady=4)
+        for r, (n, text, res) in enumerate((("brightness", "Brightness (%)", 1), ("contrast", "Contrast (%)", 1),
+                                           ("saturation", "Saturation (%)", 1), ("gamma", "Gamma", 0.01))):
+            ttk.Label(c, text=text).grid(row=r, column=0, sticky="w")
+            lo, hi = imagefx.COLOR_RANGES[n]
+            tk.Scale(c, from_=lo, to=hi, resolution=res, orient="horizontal", length=300, variable=v[n],
+                     command=lambda val, n=n: self._apply_setup(n, val)).grid(row=r, column=1, sticky="we")
+        ttk.Button(dlg, text="Reset color settings", command=self.reset_adjust).grid(row=2, column=0, pady=(4, 10))
+
+    def _var_value(self, name: str):
+        try:
+            return self._setup_vars[name].get()
+        except (tk.TclError, ValueError):                    # ô Size đang gõ dở (rỗng, chữ): giữ giá trị cũ
+            return getattr(self.look, name)
+
+    def _apply_setup(self, name: str, value) -> None:
+        """Đặt một giá trị của hộp Image setups vào `self.look` (kẹp theo thang như CVAT), đồng bộ ô trong hộp, vẽ lại."""
+        if name in ("grid", "axis_guide"):
+            value = bool(value)
+        elif name == "grid_color":
+            value = value if value in imagefx.GRID_COLORS else "White"
+        else:
+            try:
+                x = float(value)
+            except (TypeError, ValueError):
+                return
+            lo, hi = self.SETUP_RANGES[name]
+            x = min(max(x, lo), hi)
+            value = int(round(x)) if name == "grid_size" else round(x, 2)
+        setattr(self.look, name, value)
+        var = self._setup_vars.get(name)
+        if var is not None and self._var_value(name) != value:
+            var.set(value)
+        self.refresh()
+
+    def show_image_setups(self):
+        """Ctrl+G hoặc nút ^: mở hộp Image setups ngay trên mép dưới khung ảnh."""
+        dlg = self._setups_dlg
+        dlg.deiconify()
+        dlg.update_idletasks()
+        cx = self.canvas.winfo_rootx() + self.canvas.winfo_width() // 2
+        bottom = self.canvas.winfo_rooty() + self.canvas.winfo_height()
+        dlg.geometry(f"+{max(0, cx - dlg.winfo_reqwidth() // 2)}+{max(0, bottom - dlg.winfo_reqheight() - 48)}")
+        dlg.lift()
+
+    def toggle_grid(self):
+        """Phím g: bật/tắt lưới ảnh (ô Image grid của CVAT)."""
+        self._apply_setup("grid", not self.look.grid)
+        if self.look.grid:
+            step = imagefx.grid_step(self.look.grid_size, self.view.k) if self.view else self.look.grid_size
+            self.notice = f"Lưới: bật (Size {self.look.grid_size}" + (f", đang vẽ mỗi {step} px vì ảnh đang thu nhỏ" if step != self.look.grid_size else "") + ")."
+        else:
+            self.notice = "Lưới: tắt."
+        self.refresh(light=True)
 
     def _preview_pts(self):
         """Mắt đang ghim dở: vẽ luôn mắt đầu tiên, không chờ đủ số điểm. Ghim 8 điểm: khi 4 điểm đầu là một mắt hợp lệ. Ghim khi che khoé
@@ -478,6 +574,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             "tool_cursor": lambda: self.set_tool("cursor"), "tool_hand": lambda: self.set_tool("hand"),
             "zoom_in": lambda: self.zoom(self.zoom_step()), "zoom_out": lambda: self.zoom(1 / self.zoom_step()), "fit": self.fit, "toggle_ids": self.toggle_ids,
             "marker_up": lambda: self.resize_markers(1.25), "marker_down": lambda: self.resize_markers(0.8), "swap_top": self.swap_top,
+            "image_setups": self.show_image_setups, "grid": self.toggle_grid,
             "open_cvat": self.open_cvat, "send_cvat": self.send_cvat, "qc_clear": self.qc_clear,
         }
 
@@ -533,6 +630,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         for l in EYES:
             self._layer_vars[l].set(self.look.eyes[l])
         for k, v in self._adj_vars.items():
+            v.set(getattr(self.look, k))
+        for k, v in getattr(self, "_setup_vars", {}).items():
             v.set(getattr(self.look, k))
         self._color_by_var.set(self.look.color_by)
         self._outlined_var.set(self.look.outlined)
@@ -1689,7 +1788,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             parts.append((f"Người {i + 1} " if len(self.s.layers) > 1 else "") + f"#{k} frame {t.first}–{t.last} ({detail})")
         self.turn_text.set("Phát hiện quay đầu: " + "; ".join(parts) +
                            ". Mắt xa có thể bị che hoặc bộ bám trôi: kiểm tra và chỉnh tay các frame này.")
-        self.turn_bar.place(relx=0.5, rely=1.0, y=-8, anchor="s")
+        self.turn_bar.place(relx=0.5, rely=1.0, y=-36, anchor="s")         # nằm trên nút ^ (Image setups) ở giữa mép dưới
 
     def turn_jump(self):
         """Nút "Tới đoạn quay đầu": nhảy tới frame đầu của đoạn mới nhất (chọn đúng người nếu job nhiều người)."""
@@ -1859,8 +1958,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
     def reset_adjust(self):
         """Như nút "Reset color settings" của CVAT: độ sáng, tương phản, bão hoà, gamma về mặc định; không đụng lưới."""
         for n, init in imagefx.COLOR_DEFAULTS.items():
-            if n in self._adj_vars:
-                self._adj_vars[n].set(init)
+            self._setup_vars[n].set(init)
             setattr(self.look, n, init)
         self.notice = "Đã đặt lại độ sáng, tương phản, bão hoà, gamma."
         self.refresh()
@@ -2183,6 +2281,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             self.draft_bar.place(relx=0.5, y=8, anchor="n")
         else:
             self.draft_bar.place_forget()
+        if look.grid:                                                    # bước lưới đang vẽ thật (tự thưa khi thu nhỏ)
+            text += f" · lưới {imagefx.grid_step(look.grid_size, view.k)} px"
         text = self._cvat_status(text)
         if self.notice:
             text = f"{self.notice}   |   {text}"
