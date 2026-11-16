@@ -255,8 +255,17 @@ def render_base(session: Session, f: int, size: tuple[int, int], view: View, loo
     trong lúc kéo điểm, xoay nhãn: những lúc đó chỉ phần nhãn đổi."""
     look = look or Look()
     src = look.adjust(session.bgr(f)) if look.image else np.full_like(session.bgr(f), look.bg)
-    M = np.float32([[view.k, 0, -view.x0 * view.k], [0, view.k, -view.y0 * view.k]])
-    return cv2.warpAffine(src, M, size, flags=cv2.INTER_CUBIC if look.smooth else cv2.INTER_NEAREST, borderValue=look.bg)
+    return warp_image(src, view, size, look.smooth, look.bg)
+
+
+def warp_image(src: np.ndarray, view: View, size: tuple[int, int], smooth: bool, bg: tuple) -> np.ndarray:
+    """Phóng và dời ảnh `src` theo khung nhìn `view` thành ảnh cỡ `size` (màn hình).
+
+    Như CVAT, pixel ảnh i phủ toạ độ [i, i+1) (tâm ở i + 0,5); OpenCV đặt tâm pixel ở toạ độ nguyên, nên bù nửa pixel ở cả hai phía
+    (ảnh và màn hình). Không bù thì điểm đặt bằng mắt trong EyePin hiện trên CVAT lệch (−0,5; −0,5) px (design/cvat-api-notes.md)."""
+    k = view.k
+    M = np.float32([[k, 0, k * (0.5 - view.x0) - 0.5], [0, k, k * (0.5 - view.y0) - 0.5]])
+    return cv2.warpAffine(src, M, size, flags=cv2.INTER_CUBIC if smooth else cv2.INTER_NEAREST, borderValue=bg)
 
 
 def render_main(session: Session, f: int, size: tuple[int, int] = (960, 460), *, anchor: tuple | None = None,
