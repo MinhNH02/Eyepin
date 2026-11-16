@@ -108,6 +108,28 @@ class GridTests(unittest.TestCase):
         self.assertTrue((on == sharp).all())                     # Opacity 0: chỉ còn ảnh, và ảnh không làm mịn
 
 
+class ReadoutTests(unittest.TestCase):
+    EYE = {14: (100.0, 100.0), 18: (160.0, 100.0), 16: (130.0, 90.0)}
+
+    def test_readout_coordinates(self):
+        self.assertEqual(imagefx.readout((412.371, 288.049), 1024, 576, None), "x 412,37 · y 288,05")
+
+    def test_readout_outside_image(self):
+        self.assertEqual(imagefx.readout((-3, 10), 1024, 576, None), "ngoài ảnh")
+        self.assertEqual(imagefx.readout((1024.0, 10), 1024, 576, None), "ngoài ảnh")      # pixel cuối là [1023, 1024)
+
+    def test_readout_nearest_point_and_eye_width(self):
+        self.assertEqual(imagefx.readout((130, 93.2), 1024, 576, self.EYE),
+                         "x 130,00 · y 93,20 · tới điểm 16: 3,2 px (5% bề rộng mắt)")
+
+    def test_readout_without_both_corners(self):
+        self.assertEqual(imagefx.readout((130, 93.2), 1024, 576, {16: (130.0, 90.0)}),
+                         "x 130,00 · y 93,20 · tới điểm 16: 3,2 px")
+
+    def test_readout_empty_points(self):
+        self.assertEqual(imagefx.readout((130, 93.2), 1024, 576, {}), "x 130,00 · y 93,20")
+
+
 class MigrateTests(unittest.TestCase):
     def test_migrate_drops_old_scale(self):
         d = {"brightness": 30, "contrast": 1.2, "saturation": 1.0, "size": 1.5}

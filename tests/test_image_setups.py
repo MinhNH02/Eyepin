@@ -65,6 +65,39 @@ class ImageSetupsTests(unittest.TestCase):
         self.assertEqual(bool(app._setup_vars["grid"].get()), app.look.grid)
         self.assertIn("Lưới", app.notice)
 
+    def test_hover_readout_under_rotation(self):
+        """Ảnh đang xoay 90°: chữ đo là toạ độ ảnh, không phải toạ độ màn hình."""
+        import re
+        app = self.pinned_app()
+        app.rotate(1)
+        app.root.update()
+        ux, uy = app.view.to_screen(app.s.points_at(app.f)[16])
+        w0, h0 = app.render_size
+        app.on_hover(Ev(h0 - uy, ux))                            # ngược với App._unrot khi xoay 1 lần
+        text = app.measure_var.get()
+        m = re.search(r"tới điểm 16: (\d+),(\d) px", text)
+        self.assertIsNotNone(m, text)
+        # to_screen làm tròn tới nửa pixel màn hình mỗi trục: sai tới √2·0,5/k pixel ảnh, cộng 0,05 cho chữ số lẻ đã làm tròn
+        self.assertLessEqual(float(f"{m.group(1)}.{m.group(2)}"), 0.71 / app.view.k + 0.05)
+
+    def test_readout_follows_a_drag_with_coordinates_only(self):
+        app = self.pinned_app()
+        sx, sy = app.view.to_screen(app.s.pins[0][14])
+        app.on_press(Ev(sx, sy))
+        app.on_motion(Ev(sx + 20, sy))
+        text = app.measure_var.get()
+        app.on_release(Ev(sx + 20, sy))
+        x = float(text.split("·")[0].split()[1].replace(",", "."))
+        self.assertAlmostEqual(x, app.view.to_frame(sx + 20, sy)[0], delta=0.01)
+        self.assertNotIn("tới điểm", text)
+
+    def test_hover_readout_without_labels(self):
+        app, _ = self.make_app()
+        app.go(5)
+        app.root.update()
+        app.on_hover(Ev(10, 10))
+        self.assertNotIn("tới điểm", app.measure_var.get())
+
     def test_shortcuts_guide_lists_new_actions(self):
         from eyepin import shortcuts as sc
         self.assertEqual(sc.BY_ID["grid"].keys, ("g",))

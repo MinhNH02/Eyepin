@@ -96,6 +96,31 @@ def draw_grid(img: np.ndarray, view, img_w: int, img_h: int, size: int, color: s
     return step
 
 
+def _num(v: float, digits: int) -> str:
+    return f"{v:.{digits}f}".replace(".", ",")
+
+
+def readout(u, img_w: int, img_h: int, pts: dict | None) -> str:
+    """Chữ đo dưới con trỏ: toạ độ ảnh (2 chữ số lẻ) và khoảng cách tới điểm nhãn gần nhất (px; kèm % bề rộng mắt khi mắt đó đủ hai khoé).
+    Ngoài ảnh (pixel i phủ [i, i+1), ảnh là [0, img_w) × [0, img_h)) thì ghi "ngoài ảnh"."""
+    from .geometry import EYES
+    x, y = float(u[0]), float(u[1])
+    if not (0 <= x < img_w and 0 <= y < img_h):
+        return "ngoài ảnh"
+    text = f"x {_num(x, 2)} · y {_num(y, 2)}"
+    if not pts:
+        return text
+    pid, p = min(pts.items(), key=lambda kv: (kv[1][0] - x) ** 2 + (kv[1][1] - y) ** 2)
+    d = float(np.hypot(p[0] - x, p[1] - y))
+    text += f" · tới điểm {pid}: {_num(d, 1)} px"
+    spec = next((s for s in EYES.values() if pid in s.ids), None)
+    if spec is not None and spec.first in pts and spec.last in pts:
+        width = float(np.hypot(pts[spec.last][0] - pts[spec.first][0], pts[spec.last][1] - pts[spec.first][1]))
+        if width > 1e-6:
+            text += f" ({round(100 * d / width)}% bề rộng mắt)"
+    return text
+
+
 def migrate_display(display: dict) -> bool:
     """Giá trị độ sáng, tương phản, bão hoà lưu theo thang cũ của EyePin (cộng −100..100, nhân 0,3..3) không đổi được sang thang của CVAT,
     nên bỏ đi để về mặc định. Đánh dấu `color_scale = "cvat"`. Trả True khi có bỏ ít nhất một giá trị."""

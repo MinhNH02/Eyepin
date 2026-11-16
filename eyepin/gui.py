@@ -365,7 +365,11 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.listbox.bind("<Double-Button-1>", self.on_list)
         self.items: list[int] = []
         self.status = tk.StringVar(value="Mở một thư mục ảnh để bắt đầu. Cuộn chuột để phóng to; kéo chuột để dời ảnh.")
-        ttk.Label(self.root, textvariable=self.status, anchor="w").pack(fill="x", padx=8)
+        self.measure_var = tk.StringVar(value="")                  # toạ độ ảnh dưới con trỏ và khoảng cách tới điểm gần nhất
+        status_row = ttk.Frame(self.root)
+        status_row.pack(fill="x", padx=8)
+        ttk.Label(status_row, textvariable=self.measure_var, anchor="e").pack(side="right", padx=(12, 0))
+        ttk.Label(status_row, textvariable=self.status, anchor="w").pack(side="left", fill="x", expand=True)
         self.timeline = tk.Label(self.root)
         self.timeline.pack(padx=6, pady=4)
         self.timeline.bind("<Button-1>", self.on_timeline)
@@ -2011,6 +2015,17 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
     def on_hover(self, e):
         e = self._unrot(e)
         self.hover = (e.x, e.y)
+        self._update_readout()
+
+    def _update_readout(self, at=None, with_points: bool = True):
+        """Chữ đo ở góc phải dòng trạng thái (chỉ đổi chữ, không vẽ lại khung). `at`: toạ độ màn hình (đã bỏ xoay), mặc định con trỏ.
+        Lúc kéo chỉ hiện toạ độ: khoảng cách tới vị trí cũ của chính điểm đang kéo chỉ làm rối."""
+        at = at if at is not None else self.hover
+        if not self.s or self.view is None or at is None:
+            self.measure_var.set("")
+            return
+        u = self.view.to_frame(*at)
+        self.measure_var.set(imagefx.readout(u, self.s.width, self.s.height, self.s.points_at(self.f) if with_points else None))
 
     @net_safe
     def on_press(self, e):
@@ -2107,6 +2122,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         e = self._unrot(e)
         self.hover = (e.x, e.y)
         e = self._scaled(e)
+        self._update_readout(at=(e.x, e.y), with_points=False)          # chỗ điểm đang kéo tới (đã nhân độ nhạy chuột)
         if self.pinning == "drawbox" and self._box0 is not None and self.view:
             p = self.view.to_frame(e.x, e.y)
             if abs(p[0] - self._box0[0]) * self.view.k >= 3:          # mắt mẫu hiện ngay trong lúc kéo khung
