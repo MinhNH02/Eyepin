@@ -1,0 +1,25 @@
+# Bytecode và cache
+__pycache__/
+*.pyc
+
+# Ảnh và video: ảnh của công ty/bộ dữ liệu không được đưa lên GitHub (CLAUDE.md).
+# Chỉ giữ lại icon của giao diện trong eyepin/assets.
+*.jpg
+*.jpeg
+*.bmp
+*.mp4
+*.zip
+*.png
+!eyepin/assets/
+!eyepin/assets/**/*.png
+
+# Trạng thái công cụ phiên làm việc (có bản sao cũ của mã; không phải mã nguồn)
+.superpowers/
+
+# Dữ liệu và kết quả chạy thử: giữ ở máy, không đưa lên repo
+spike/out/
+spike/roundtrip/
+
+# Tài liệu guideline của công ty và sơ đồ archify: giữ ở máy
+guideline/
+.archify/

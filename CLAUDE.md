@@ -1,0 +1,173 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Dự án là gì
+
+**EyePin** (tên do người dùng chọn ngày 2026-11-13; gói Python là `eyepin`, thư mục dự án vẫn là `eye_label_tool`) là tool chạy trên máy (cửa sổ riêng, không phải web) hỗ trợ gán nhãn **tự động một phần** cho hai skeleton mắt của bài
+DMS Landmark trong CVAT: `mattrai` (điểm 14–21) và `matphai` (điểm 22–29), cả kiểu **shape** lẫn **track**. Mục tiêu
+trước mắt là một bản demo cho mentor và đội phát triển tool; nếu thành công, người dùng được truy cập dữ liệu lớn.
+
+**Trạng thái (2026-11-13):** người dùng chọn cách xây dần: làm từng lát chạy được, thử trên dữ liệu, rồi sửa spec và
+plan theo những gì phát hiện. Bản thiết kế `design/2026-11-13-eye-label-tool-design-v3.md` là định hướng chưa duyệt
+chính thức; các bản v1, v2 và `design/design-notes.md` là lịch sử, khi khác nhau thì v3 thắng. Khi xây phát hiện điều gì
+làm đổi thiết kế, ghi lại vào spec (mục 10 của v3 là danh sách câu hỏi mở).
+
+Đã có (139 test, đều qua): lõi `eyepin/` (hình học, đọc ghi CVAT 1.1, bản xem trước khớp CVAT, bám theo ảnh, chọn keyframe, quét),
+phiên làm việc `session.py` (ghim, hoàn tác, cờ Occluded/Outside), phần vẽ `render.py` và cửa sổ Tkinter `gui.py` (thanh điều hướng
+frame, phát, phím tắt kiểu CVAT, ghim khi che khoé với vòng sai số). Lưu phiên (Ctrl+S, tự lưu mỗi 2 phút khi có thay đổi, hỏi khôi phục khi mở lại cùng thư mục) ghi `~/.eyepin/sessions/<mã>.json` chỉ gồm toạ độ và cờ; xuất file import là Ctrl+Shift+S. Giao diện: `eyepin/theme.py` (ba màu cam #FF6600, nền giấy #F6F6EF, chữ #1F1F1F; chữ trên nền cam luôn là chữ đen). Phím tắt và cài đặt: `eyepin/shortcuts.py` là nơi duy nhất định nghĩa hành động + phím (CVAT làm mặc định, gán lại được trong F2).
+Chưa có: đo độ chính xác của ước lượng khoé trên đầu quay thật
+(mới một mẫu), chia đoạn theo người, hai mắt ghim riêng ở hai frame khác nhau, import thẳng vào CVAT từ cửa sổ, kéo điểm ở frame
+không-ghim.
+
+## Kiến trúc và quy tắc cập nhật
+
+Sơ đồ kiến trúc hiện tại: `.archify/architecture-eyepin-flow-20261116-125400/eyepin-architecture.html` (tạo bằng `/archify`, vẽ chi tiết luồng từ thư mục ảnh đến điểm ghim, ba cách ghim, nhãn, file import; bản cũ
+`.archify/architecture-eyepin-flow-20261116-113000/` là bản trước khi có đường vẽ khung và icon, `.archify/architecture-eyepin-objects-20261115-022446/` là bản module nhiều người, `.archify/architecture-eyepin-modules-20261113-155705/` là bản trước khi tách hai mixin, `.archify/architecture-eye-tool-20261113-000000/` là hướng A ban đầu, chỉ để tham khảo). Phân tầng: `gui.py` (+ `theme.py`) chỉ nối chuột, phím vào
+`Session`; `render.py` vẽ ra ảnh numpy; `session.py` giữ mọi trạng thái (ghim, undo, lọc, lưu phiên) và gọi `geometry`, `tracking`, `scan`,
+`cvatxml`; `shortcuts.py` định nghĩa phím và cài đặt; dữ liệu cục bộ ở `~/.eyepin/` (settings.json, sessions/*.json).
+
+**Quy tắc (người dùng yêu cầu 2026-11-13): sau mỗi lần thay đổi một module lớn (thêm/bỏ/tách module, đổi luồng dữ liệu, đổi phân tầng), chạy `/archify`
+để vẽ lại sơ đồ vào một thư mục `.archify/architecture-eyepin-<chủ đề>-<ngày-giờ>/` mới, rồi cập nhật đường dẫn ở đây và danh sách module trong mục "Mã trong dự án".**
+Sửa nhỏ trong một module không cần vẽ lại.
+
+## Danh sách việc
+
+`TASKS.md` (thư mục gốc) là danh sách việc của dự án. **Quy tắc (người dùng yêu cầu 2026-11-13): làm xong việc nào thì tick `[x]` việc đó ngay trong `TASKS.md`,
+việc mới phát sinh thì thêm vào đúng nhóm, đừng để file lệch với thực tế.**
+
+## Quy tắc bắt buộc (người dùng đã chốt)
+
+- **Không dùng model học máy** để tìm mắt hay sinh nhãn (MediaPipe, U-Net, landmark model... đều không). Xử lý ảnh
+  thông thường (so khớp vùng ảnh, dò mép) đang được coi là được phép nhưng chưa xác nhận với công ty.
+- Ảnh của công ty được lưu trên ổ đĩa máy, nhưng **không bao giờ đưa lên mạng, GitHub hay dịch vụ ngoài**. Không đặt
+  ảnh có mặt tài xế thật vào thư mục này.
+- Trong mạng nội bộ công ty chỉ được dùng **Codex** làm trợ lý AI. Logic phải nằm trong script chạy độc lập; chỉ
+  dẫn cho Codex viết thành file văn bản (mẫu: `spike/AGENTS.md`).
+- Ghi nhãn vào CVAT bằng **tính năng import**, không sửa từng nhãn qua API.
+- CVAT local (`http://localhost:8080`) chứa dữ liệu công khai: được thử nghiệm, xem ảnh, ghi tự do. Server công ty
+  thì không tự ghi, không điều khiển trình duyệt vào đó.
+
+## Những điều về CVAT phải nắm (đã kiểm trên bản 2.75)
+
+Chi tiết và vị trí dòng mã: `design/cvat-keyframe-behaviour.md`.
+
+- Track nội suy **đường thẳng** giữa hai keyframe; sau keyframe cuối giữ nguyên vị trí; Occluded/Outside ở frame giữa
+  chép từ keyframe bên trái.
+- Trong skeleton track, **mỗi điểm có keyframe riêng**; kéo một điểm trong CVAT chỉ ghim điểm đó. Tool phải luôn ghi
+  keyframe đủ 8 điểm.
+- **Import vào job mặc định xoá toàn bộ nhãn của job** rồi mới nạp. File import phải chứa mọi nhãn của job. Một file
+  "CVAT 1.1" chứa được cả shape (`<image>`) lẫn track (`<track>`), và cả hai giữ nguyên kiểu sau import.
+- Sau khi Docker Desktop khởi động lại, cổng 8080 có thể trả "empty reply" dù CVAT đã chạy trong container; sửa bằng
+  `docker restart traefik`.
+- Server công ty: `POST /api/auth/login` trả khoá dùng với `Authorization: Token <khoá>`; mọi lệnh gọi kèm
+  `?org=2D`; không gửi `Accept: application/json` (bị 406).
+
+## Mã trong dự án (`eyepin/`)
+
+- `geometry.py`: `derive` suy 8 điểm từ 4 điểm ghim (parabol); `estimate_hidden_corner` đoán khoé bị che từ 3 điểm
+  ghim còn lại (trung điểm hai điểm giữa mí nằm ở khoảng 0,49–0,515 dọc trục khoé–khoé).
+- `cvatxml.py`: `parse` đọc file CVAT 1.1; `write_eyes` bỏ skeleton mắt cũ, thêm skeleton mắt mới và giữ nguyên mọi thứ
+  khác. Shape mắt chỉ ghi được khi nền là file export "CVAT for images" (có thẻ `<image>`).
+- `preview.py`: `position_at` tính vị trí từng frame đúng như CVAT hiển thị.
+- `scan.py`: `scan` quét nhãn mắt (đỏ: thứ tự khoé, mí đảo, bắt chéo, ngoài khung; vàng: nhảy, keyframe thiếu, đứng yên) và gộp các frame
+  liên tiếp thành một đoạn. Phép kiểm bắt chéo có dung sai 0,3 px để mắt nhắm (hai mí trùng nhau) không bị báo nhầm.
+- `geometry.assign_roles`/`split_eyes`: người dùng bấm 8 điểm theo thứ tự tuỳ ý; tool chia hai mắt theo x, chọn hai khoé là cặp xa nhau nhất,
+  điểm cao hơn là giữa mí trên; từ chối (ValueError tiếng Việt) khi 4 điểm không giống một con mắt (khoé quá gần, trục quá dốc, mí sát khoé).
+- `session.py` (có undo/redo 100 bước cho các điểm ghim; trạng thái một job, ảnh chỉ giữ tối đa 40 frame trong bộ nhớ), `render.py` (vẽ ra ảnh, kiểm tra được không cần
+  cửa sổ), `gui.py` (Tkinter mỏng, nối chuột và phím vào Session).
+- Panel Đối tượng kiểu CVAT: `#ID`, loại "skeleton track", cột ★ (bấm = ghim/bỏ keyframe), khoá/ẩn/Occluded/Outside; chọn một mắt thì hiện tay cầm xoay phía mí trên (kéo để xoay quanh tâm, hoặc `,` `.` xoay 1°, `<` `>` xoay 5°). Khảo sát CVAT thật: `design/cvat-feature-inventory.md` mục 7.
+- Mỗi mắt là một đối tượng có ID (`Session.obj_ids`; 1, 10, 19… như giao diện CVAT), keyframe riêng (`eye_keyframes`, `toggle_eye_key`) và bám riêng (`recompute` theo từng mắt). Một job có nhiều người: `Session.layers` là danh sách `Layer` (mỗi Layer một mattrai + một matphai); `pins`, `flags`, `labels`... luôn là của Layer đang chọn (`Session.cur`) nên mã một người không đổi; ID toàn job không trùng (1, 10, 19, 28…). Panel Đối tượng liệt kê mọi đối tượng (dòng `eye:mattrai@1` là của Layer 1); `LayerSet` giữ khoá và Pinned riêng từng người.
+- Frame ghim có thể chỉ chứa một mắt (sau khi xoá label hoặc ghim từng mắt): `Session.delete_eye`, `end_eye_here`, `add_pin_one`; bộ bám, `build_tracks` và xuất file xử lý theo từng mắt.
+- `gui_objects.py` (panel Đối tượng: Sort by, menu ⋮, Pinned, Propagate, tab Labels, tab Issues) và `gui_frames.py` (Menu Remove annotations / Run actions / Finish job, hàng tên frame, xoá frame, tìm theo tên, phóng vào mắt) là mixin của `App`; đối chiếu CVAT: `design/cvat-parity.md`.
+- `icons.py`: nút biểu tượng (phông Segoe Fluent Icons/MDL2) và tooltip; giao diện kiểu CVAT: thanh ngang trên (menu, lưu, hoàn tác, điều hướng; Thông tin, Toàn màn hình F11, Lọc, Hiển thị) và thanh công cụ dọc bên trái chỉ có biểu tượng.
+- `shortcuts.py`: danh mục hành động và phím (mặc định theo CVAT, đối chiếu cột "phím CVAT"), đọc ghi `~/.eyepin/settings.json`; `theme.py`: bảng màu và style Tkinter.
+- `scan.py` có thêm luật EAR (`eye_ear`; ngưỡng `EAR_CLOSED/WIDE/JUMP` chưa chỉnh theo dữ liệu thật).
+- `headturn.py` (MVP 1 demo 2026-11-16): `detect` phát hiện đoạn quay đầu chỉ từ toạ độ và độ khớp (khoảng cách hai mắt so với mốc = phân vị 90 tại frame ghim, bỏ frame khớp < 0,85, vào 0,86 / ra 0,90, tối thiểu 5 frame, xác nhận bằng bề rộng mắt tại frame ghim); `for_session` tính theo từng người; `format_report` là văn bản của lệnh `turns`. `Session.turns` được tính lại sau mỗi `recompute` và khi đổi cờ; hiện ở dải cam trên dải thời gian (`render_timeline`) và đầu tab Issues (`gui_objects._turn_rows`). Ngưỡng chỉnh trên một clip (case 01); chưa kiểm trên dữ liệu khác. Thiết kế: `design/2026-11-15-headturn-mvp-design.md`, kế hoạch: `design/2026-11-16-headturn-mvp1-plan.md`.
+- `evaluate.py` (MVP 2): với mỗi ghim giữa của một mắt (có ghim kề hai phía), so điểm người ghim với hai cách đoán: đường thẳng giữa hai ghim kề (cái CVAT làm) và `Session.arrival` (bộ bám); sai số tính theo px và % bề rộng mắt, chia nhóm trong/ngoài đoạn quay đầu và chớp mắt (EAR < `EAR_CLOSED`); loại ghim trùng khít bám tiến (phím K, kéo một điểm). `format_table` in bảng kèm số mẫu, khoảng cách ghim, nguồn ghim; nút trong hộp Thông tin (`App.accuracy_report`) và lệnh `report`. Chỉ đo, không đổi nhãn. Chưa có cột bám hai chiều (MVP 3).
+- Nối thẳng CVAT local (2026-11-16, thiết kế `design/2026-11-16-cvat-direct-design.md`, ghi chú API thật `design/cvat-api-notes.md`): `frames.py` (nguồn ảnh: `DirSource`; `Session(source=...)`, `Session.frames_dir` là `None` với nguồn khác); `cvatapi.py` (`CvatClient`: đăng nhập, danh sách, ảnh, xuất, import; chỉ localhost, bỏ qua proxy, không theo chuyển hướng, ảnh chỉ trong RAM; import KHÔNG gửi `filename`); `cvatsource.py` (`CvatSource`, `open_job`, `base_format`: định dạng nền chọn theo loại đối tượng không phải mắt vì "images" trải track thành shape, "video" đổi shape thành track một frame); `cvatxml.parse_bytes`/`write_eyes` đổi số frame job ↔ chỉ số EyePin; `qc.py` + `Session.qc` (job đã có nhãn mắt: chỉ xem, mọi sửa ném `QC_MSG`; `clear_old_eyes`/`restore_old_eyes`); `cvatsync.py` (`prepare`/`send`/`restore`/`mark_synced`: cảnh báo, chống ghi đè theo `updated_date`, đối chiếu sau khi gửi, bản chụp); `gui_cvat.py` (hộp "Mở từ CVAT…", việc mạng chạy luồng nền `_run_bg` có khoá sửa). Lệnh: `python -m eyepin gui --cvat http://localhost:8080 --job <id>`. Số frame của job lấy từ `job.start_frame/stop_frame` (tương đối); từ chối mở task video, job thưa, task có start_frame/frame_step riêng; `Session.stale` khi bám lỗi mạng (không gửi); `prepare` từ chối khi đối tượng không phải mắt nằm trên frame đã xoá hoặc nền video mà job có tag. Đã kiểm trên CVAT 2.75.0 thật bằng cầu nối trình duyệt (`spike/cvat_bridge_check.py`); chưa thử GUI với đăng nhập thật, task nhiều job, frame đã xoá.
+- Vẽ từng mắt (2026-11-16): `App.start_draw` (phím N) mở bảng "Vẽ mắt" (label, kiểu Track; Shape chưa có), `begin_draw(label, "points"|"box")`, bản nháp `App.draft` vẽ màu cam qua `_preview_pts`, `apply_draft` gọi `Session.pin_eye` (giữ vai trò điểm, kiểm bằng `geometry.validate_four`, chỉ tạo keyframe cho mắt đó). `geometry.four_in_box` dựng mắt mẫu từ khung kéo.
+- Đổi kích thước (2026-11-16): `render.resize_handles(view, hộp)` cho 8 tay cầm của khung chọn (vẽ trong `draw_overlay`, tag `resize:<tên>`); `App._resize_hit` nhường cho kéo điểm khi điểm gần con trỏ hơn; `App._resize_override` co giãn mắt theo tỉ lệ, thả chuột thì `Session.drag_points`.
+- Vẽ nhãn (2026-11-16): `render.draw_overlay(bút_vẽ, ...)` vẽ mọi thứ trên ảnh nền qua một "bút vẽ". `render.CvPainter` vẽ lên ảnh numpy (`render_main`, xem trước, test, và khi nhãn mờ < 100%); `gui.CanvasPainter` tạo đối tượng vector trên Canvas (mặc định trong cửa sổ, tag `ov`, điểm có tag `pt:<mắt>:<id>`). Khung nhìn tự động chỉ canh lại khi đổi frame, cỡ khung, xoay ảnh, frame vừa có nhãn lần đầu hoặc bấm Vừa khung (`App._auto_view`); sửa nhãn không dời ảnh.
+- `Session.load_pins(data)` ghim từ dữ liệu file `--pins` (kiểm hết trước, sai thì không ghim gì). `App.scratch` (mở bằng `--pins`): không khôi phục và không ghi file phiên (mọi đường ghi đều qua `save_work`).
+- `tracking.py`: `track_forward`/`propagate` bám mắt bằng so khớp vùng ảnh (OpenCV `matchTemplate`, không model) và chỉ đi
+  về phía sau từ mỗi frame ghim (quy tắc đã chốt); `pin_jump` đo độ trôi trước một frame ghim; `reduce_keyframes` chọn ít keyframe
+  nhất để nội suy đường thẳng của CVAT lệch không quá một ngưỡng pixel. Phép bám chỉ dời cả mắt, không đổi dáng mắt.
+
+## Bố cục
+
+- `HUONG_DAN.md`: trang hướng dẫn sử dụng cho người dùng (mở tool, 5 bước gán nhãn, quay đầu, báo độ chính xác, giới hạn).
+- `design/`: bản thiết kế, hành vi keyframe của CVAT, bản phác giao diện (`mockups/*.html`).
+- `guideline/`: guideline học viên v1.3 (nguồn luật chính) và tài liệu lấy từ CVAT ngày 14/7/2026 (OCR, Phụ lục B
+  liệt kê chỗ mâu thuẫn với v1.3 — luật trạng thái mắt còn chờ mentor).
+- `spike/`: bản demo **dùng một lần** (hai hướng: bám theo ảnh từ 1 frame ghim, và ghim 5 frame + nội suy). Kết quả ở
+  `spike/out/qc_report.md`, trang so sánh `spike/out/viewer.html`. Chỉ tham khảo, không dùng lại nguyên trạng.
+- Mã dùng lại được nằm ngoài thư mục này, ở `..\week2\tools\`:
+  - `eye_interp.py`: từ 4 điểm ghim (14,16,18,20 / 22,24,26,28) suy ra 4 điểm còn lại bằng parabol theo tỉ lệ
+    guideline v1.3 mục 3.3. `run_demo.py` import hàm `derive` từ đây.
+  - `validate_eye_skeletons.py`: kiểm hình học (thứ tự điểm, mí trên/dưới, bắt chéo, Outside, điểm nhảy).
+  - `eye_prelabel.py`: bản cũ dùng MediaPipe — **không còn được dùng** vì lệnh cấm model.
+
+## Lệnh thường dùng
+
+```bash
+python -m eyepin gui [thư_mục_ảnh] [--xml annotations.xml]     # mở cửa sổ; phím tắt theo CVAT, xem F1 hoặc design/shortcuts.md; cài đặt F2 (lưu ở ~/.eyepin/settings.json)
+python -m eyepin shortcuts --out design/shortcuts.md           # sinh lại guide phím tắt từ eyepin/shortcuts.py
+python -m eyepin scan annotations.xml                          # quét nhãn mắt có sẵn, in danh sách frame cần chú ý
+python -m eyepin turns <thư_mục_ảnh> --pins pins.json          # báo đoạn quay đầu từ điểm ghim (ví dụ spike/out/pins_case01_ai.json), không cần cửa sổ
+python -m eyepin report <thư_mục_ảnh> --pins pins.json         # bảng sai số tại frame ghim bị giấu: đường thẳng CVAT so với bám tiến
+python -m eyepin gui <thư_mục_ảnh> --pins pins.json            # mở cửa sổ với ghim có sẵn; không đụng file phiên đã lưu
+python -m eyepin gui --cvat http://localhost:8080 --job 5      # mở thẳng một job của CVAT local (hỏi mật khẩu trong cửa sổ)
+python -m eyepin preview <thư_mục_ảnh> out.png --frame N [--pins pins.json]   # vẽ khung nhìn ra PNG, không cần cửa sổ
+```
+
+```bash
+# Test đơn vị (unittest có sẵn; máy chưa có pytest)
+python -m unittest discover -s tests -v
+# Test tích hợp với CVAT local: cần container chạy và job đích TRỐNG (nó import nhãn thử rồi xoá sạch job)
+python tests\cvat_roundtrip.py 9
+# Đối chiếu tool với CVAT thật (V1-V6: nội suy, cờ, keyframe, xoay, quét, số keyframe); cần job TRỐNG, mặc định job 5
+python tests\verify_vs_cvat.py 5
+```
+
+```bash
+# Bật CVAT local (tag mặc định 'dev' không kéo được)
+cd C:\Users\minhf\cvat && $env:CVAT_VERSION='v2.75.0'; docker compose up -d     # PowerShell; server trả 502 khoảng 1 phút đầu
+
+# Suy 8 điểm từ 4 điểm ghim trong một file CVAT XML; hoặc đo độ lệch trên file đã đủ 8 điểm
+python ..\week2\tools\eye_interp.py vao.xml ra.xml
+python ..\week2\tools\eye_interp.py --evaluate day_du.xml
+
+# Kiểm hình học nhãn mắt (--no-temporal khi các frame không liên tiếp)
+python ..\week2\tools\validate_eye_skeletons.py annotations.xml --report ket_qua.txt
+
+# Chạy lại spike: đọc điểm ghim ở spike/out/pins_ai.json, ghi kết quả vào spike/out/
+python spike\run_demo.py
+# Ảnh phóng to vùng mắt có lưới toạ độ để đọc điểm ghim
+python spike\make_sheet.py <thư_mục_frame> <chỉ_số_frame> x0 y0 x1 y1 out\sheet.png 6
+```
+
+Import một file vào job trên CVAT local đã làm được bằng cách gọi
+`cvat.apps.dataset_manager.task.import_job_annotations(path, job_id, 'CVAT 1.1', False)` trong
+`docker exec cvat_server python manage.py shell` (chỉ khi job đang trống hoặc người dùng đồng ý mất nhãn cũ).
+Tạo task mới từ zip: `C:\Users\minhf\Downloads\dms_build\cases\create_cvat_tasks.py` (đọc khoá từ `~\.cvat_token`;
+khoá của tài khoản local dùng tiền tố `Token`, không phải `Bearer`).
+
+## Dữ liệu thử (CVAT local, project `eyes_label` #2)
+
+Không có nhãn chuẩn do người gán cho dữ liệu nào. Nguồn ảnh ở `C:\Users\minhf\Downloads\dms_build\`.
+
+| Task/job | Nội dung |
+| --- | --- |
+| #2 | 200 ảnh rời: 140 hồng ngoại (DMD), 60 ảnh màu (YawDD) |
+| #3, #4 | 200 frame liên tiếp PhysDrive 2352–2551, mặt thẳng, cháy sáng; đang chứa track của spike |
+| #5 | Quay đầu, mắt bên xa bị che một phần (7650–7859) — dữ liệu cho tính năng chính của demo |
+| #6–#9 | Quay đầu/chớp/tóc che, mặt sát mép, quay hẳn đi (Outside), tay che mắt |
+
+Video gốc: `C:\Users\minhf\Downloads\physdrive_video\RGB.mp4` (một người, ban ngày, không kính; README bộ dữ liệu có
+giới hạn sử dụng — chỉ dùng nội bộ). Chưa có video ban đêm, hồng ngoại liên tiếp, kính loá, hay job nhiều người.
+
+## Giao tiếp
+
+Người dùng viết tiếng Việt; trả lời và viết tài liệu bằng tiếng Việt. Ghi rõ điều gì người dùng đã chốt, điều gì là
+đề xuất, điều gì chưa kiểm.

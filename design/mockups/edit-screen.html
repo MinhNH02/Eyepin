@@ -1,0 +1,100 @@
+<h2>Màn hình chỉnh gợi ý trước khi apply</h2>
+<p class="subtitle">Bản phác theo mô tả của bạn: đang ở frame 4, bên phải là frame 3 và 5 cho thấy chúng sẽ thay đổi thế nào. Hình mắt chỉ là minh hoạ, chưa phải ảnh thật.</p>
+
+<div class="mockup">
+  <div class="mockup-header">Job 2 · frame 4 / 199 · chế độ: Track</div>
+  <div class="mockup-body" style="padding:12px">
+    <div style="display:flex;gap:12px;align-items:stretch;flex-wrap:wrap">
+
+      <!-- khung chính -->
+      <div style="flex:3 1 520px;min-width:320px">
+        <div class="label">Frame 4 (đang sửa) · kéo điểm để chỉnh</div>
+        <svg viewBox="0 0 640 300" style="width:100%;border-radius:6px;background:#4a4a4a;display:block">
+          <rect width="640" height="300" fill="#555"/>
+          <!-- mắt minh hoạ -->
+          <path d="M95 152 Q188 78 285 150 Q190 205 95 152Z" fill="#8c8c8c"/>
+          <circle cx="190" cy="146" r="30" fill="#222"/>
+          <path d="M355 150 Q452 78 545 152 Q450 205 355 150Z" fill="#8c8c8c"/>
+          <circle cx="450" cy="146" r="30" fill="#222"/>
+          <!-- gợi ý của model: nét đứt -->
+          <polygon points="92,155 133,126 186,111 240,124 283,153 243,175 188,186 136,177" fill="none" stroke="#ffd54a" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <polygon points="357,153 400,124 454,110 507,126 547,155 504,177 452,186 397,175" fill="none" stroke="#ffd54a" stroke-width="1.5" stroke-dasharray="5 4"/>
+          <!-- nhãn đang sửa: nét liền -->
+          <polygon points="95,152 135,122 188,106 242,120 285,150 245,172 190,182 138,174" fill="none" stroke="#39e06b" stroke-width="2"/>
+          <polygon points="355,150 398,120 452,106 505,122 545,152 502,174 450,182 395,172" fill="none" stroke="#4ab8ff" stroke-width="2"/>
+          <!-- điểm suy ra: nhỏ, rỗng -->
+          <g fill="#555" stroke="#39e06b" stroke-width="2"><circle cx="135" cy="122" r="4"/><circle cx="242" cy="120" r="4"/><circle cx="245" cy="172" r="4"/><circle cx="138" cy="174" r="4"/></g>
+          <g fill="#555" stroke="#4ab8ff" stroke-width="2"><circle cx="398" cy="120" r="4"/><circle cx="505" cy="122" r="4"/><circle cx="502" cy="174" r="4"/><circle cx="395" cy="172" r="4"/></g>
+          <!-- 4 điểm người đặt: to, đặc -->
+          <g fill="#39e06b" stroke="#fff" stroke-width="1.5"><circle cx="95" cy="152" r="7"/><circle cx="188" cy="106" r="7"/><circle cx="285" cy="150" r="7"/><circle cx="190" cy="182" r="7"/></g>
+          <g fill="#4ab8ff" stroke="#fff" stroke-width="1.5"><circle cx="355" cy="150" r="7"/><circle cx="452" cy="106" r="7"/><circle cx="545" cy="152" r="7"/><circle cx="450" cy="182" r="7"/></g>
+          <g font-size="13" font-family="sans-serif" fill="#fff">
+            <text x="72" y="148">14</text><text x="180" y="94">16</text><text x="292" y="146">18</text><text x="182" y="204">20</text>
+            <text x="332" y="146">22</text><text x="444" y="94">24</text><text x="552" y="148">26</text><text x="442" y="204">28</text>
+          </g>
+          <g font-size="11" font-family="sans-serif" fill="#ddd">
+            <text x="118" y="114">15</text><text x="246" y="112">17</text><text x="250" y="188">19</text><text x="122" y="190">21</text>
+            <text x="382" y="112">23</text><text x="510" y="114">25</text><text x="506" y="190">27</text><text x="380" y="188">29</text>
+          </g>
+          <text x="14" y="24" font-size="14" font-family="sans-serif" fill="#39e06b">mattrai</text>
+          <text x="570" y="24" font-size="14" font-family="sans-serif" fill="#4ab8ff">matphai</text>
+        </svg>
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:8px;font-size:13px">
+          <span>● điểm to: 4 điểm bạn đặt (14 16 18 20 · 22 24 26 28)</span>
+          <span>○ điểm nhỏ: tool tự suy ra</span>
+          <span style="color:#c79a00">┅ nét đứt vàng: gợi ý của model</span>
+        </div>
+      </div>
+
+      <!-- hai frame bên cạnh -->
+      <div style="flex:1 1 220px;min-width:200px;display:flex;flex-direction:column;gap:10px">
+        <div>
+          <div class="label">Frame 3 · nội suy · sẽ đổi theo frame 4</div>
+          <svg viewBox="0 0 640 300" style="width:100%;border-radius:6px;background:#4a4a4a;display:block">
+            <rect width="640" height="300" fill="#555"/>
+            <path d="M95 152 Q188 82 285 150 Q190 203 95 152Z" fill="#8c8c8c"/><circle cx="190" cy="147" r="30" fill="#222"/>
+            <path d="M355 150 Q452 82 545 152 Q450 203 355 150Z" fill="#8c8c8c"/><circle cx="450" cy="147" r="30" fill="#222"/>
+            <polygon points="88,160 130,132 182,118 236,130 279,158 239,180 184,190 132,182" fill="none" stroke="#ddd" stroke-width="3" stroke-dasharray="8 6"/>
+            <polygon points="95,153 135,124 188,109 242,122 285,151 245,173 190,183 138,175" fill="none" stroke="#39e06b" stroke-width="4"/>
+            <polygon points="355,151 398,122 452,109 505,124 545,153 502,175 450,183 395,173" fill="none" stroke="#4ab8ff" stroke-width="4"/>
+          </svg>
+          <div style="font-size:12px;margin-top:4px">xám đứt: trước khi sửa · màu: sau khi sửa · <b>dịch 7 px</b></div>
+        </div>
+        <div>
+          <div class="label">Frame 5 · nội suy · sẽ đổi theo frame 4</div>
+          <svg viewBox="0 0 640 300" style="width:100%;border-radius:6px;background:#4a4a4a;display:block">
+            <rect width="640" height="300" fill="#555"/>
+            <path d="M95 152 Q188 118 285 150 Q190 176 95 152Z" fill="#8c8c8c"/><circle cx="190" cy="150" r="16" fill="#222"/>
+            <path d="M355 150 Q452 118 545 152 Q450 176 355 150Z" fill="#8c8c8c"/><circle cx="450" cy="150" r="16" fill="#222"/>
+            <polygon points="95,152 135,124 188,110 242,122 285,150 245,170 190,180 138,172" fill="none" stroke="#39e06b" stroke-width="4"/>
+            <polygon points="355,150 398,124 452,110 505,124 545,152 502,172 450,180 395,170" fill="none" stroke="#4ab8ff" stroke-width="4"/>
+          </svg>
+          <div style="font-size:12px;margin-top:4px;color:#d9534f"><b>⚠ Mắt đang khép nhưng nhãn vẫn mở: cần thêm keyframe ở frame 5</b></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- thanh thời gian -->
+    <div style="margin-top:12px">
+      <div class="label">Dòng thời gian · ◆ keyframe · ○ nội suy</div>
+      <div style="display:flex;gap:4px;font-size:13px;flex-wrap:wrap">
+        <span style="padding:4px 9px;border:1px solid #999;border-radius:4px">1 ◆</span>
+        <span style="padding:4px 9px;border:1px solid #999;border-radius:4px">2 ○</span>
+        <span style="padding:4px 9px;border:1px solid #999;border-radius:4px">3 ○</span>
+        <span style="padding:4px 9px;border:2px solid #39e06b;border-radius:4px;font-weight:bold">4 ◆ đang sửa</span>
+        <span style="padding:4px 9px;border:1px solid #d9534f;border-radius:4px;color:#d9534f">5 ○ ⚠</span>
+        <span style="padding:4px 9px;border:1px solid #999;border-radius:4px">6 ○</span>
+        <span style="padding:4px 9px;border:1px solid #999;border-radius:4px">7 ○</span>
+        <span style="padding:4px 9px;border:1px solid #999;border-radius:4px">8 ◆</span>
+        <span style="padding:4px 9px;border:1px solid #999;border-radius:4px">9 ○</span>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
+      <button class="mock-button">Lấy gợi ý của model</button>
+      <button class="mock-button">Bỏ thay đổi</button>
+      <button class="mock-button">Apply lên CVAT</button>
+      <span style="font-size:13px">Chưa có gì ghi lên CVAT cho tới khi bấm Apply.</span>
+    </div>
+  </div>
+</div>

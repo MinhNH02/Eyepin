@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bản phác màn hình chính</title>
+<style>
+  :root { --bg:#f3f4f6; --panel:#ffffff; --line:#d5d8de; --text:#1b1f27; --muted:#5d6675; --accent:#2563eb;
+          --green:#16a34a; --blue:#0284c7; --amber:#b7791f; --red:#dc2626; --frame:#565656; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#14161a; --panel:#1e2127; --line:#353a44; --text:#e6e8ec; --muted:#9aa3b2; --accent:#60a5fa;
+            --green:#4ade80; --blue:#38bdf8; --amber:#fbbf24; --red:#f87171; --frame:#4a4a4a; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.45 "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width:1360px; margin:0 auto; padding:16px; }
+  h1 { font-size:18px; margin:0 0 2px; } .note { color:var(--muted); margin:0 0 12px; }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .bar { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:10px; }
+  .btn { border:1px solid var(--line); background:var(--panel); color:var(--text); border-radius:6px; padding:5px 11px; font:inherit; }
+  .btn.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .seg span { padding:5px 11px; } .seg .on { background:var(--accent); color:#fff; }
+  .sep { width:1px; height:22px; background:var(--line); }
+  .tag { color:var(--muted); font-size:12px; }
+  .grid { display:grid; grid-template-columns:minmax(0,1fr) 340px; gap:10px; }
+  @media (max-width: 900px) { .grid { grid-template-columns:1fr; } }
+  .label { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 6px; }
+  svg.frame { width:100%; display:block; border-radius:6px; background:var(--frame); }
+  .legend { display:flex; flex-wrap:wrap; gap:14px; margin-top:8px; font-size:13px; color:var(--muted); }
+  .stack { display:flex; flex-direction:column; gap:10px; }
+  .cap { font-size:12.5px; margin-top:4px; } .cap b { font-variant-numeric:tabular-nums; }
+  .warn { color:var(--amber); } .bad { color:var(--red); }
+  .list { margin:0; padding:0; list-style:none; font-size:13px; }
+  .list li { display:grid; grid-template-columns:12px 74px 1fr; gap:8px; padding:5px 0; border-top:1px solid var(--line); }
+  .list li:first-child { border-top:0; }
+  .dot { width:9px; height:9px; border-radius:50%; margin-top:5px; }
+  .dot.r { background:var(--red); } .dot.y { background:var(--amber); } .dot.g { background:var(--muted); }
+  .fnum { font-variant-numeric:tabular-nums; font-weight:600; }
+  .people { display:grid; grid-template-columns:80fr 60fr 60fr; gap:3px; margin-bottom:6px; font-size:12px; }
+  .people div { border:1px solid var(--line); border-radius:4px; padding:2px 6px; color:var(--muted); white-space:nowrap; overflow:hidden; }
+  .strip { display:flex; flex-wrap:wrap; gap:3px; }
+  .cell { width:30px; border:1px solid var(--line); border-radius:4px; text-align:center; font-size:11px; padding:2px 0 3px; font-variant-numeric:tabular-nums; }
+  .cell .m { display:block; font-size:13px; line-height:1.1; }
+  .cell.sel { background:color-mix(in srgb, var(--accent) 14%, transparent); }
+  .cell.cur { border:2px solid var(--green); font-weight:700; }
+  .cell.r { border-color:var(--red); color:var(--red); } .cell.y { border-color:var(--amber); color:var(--amber); }
+  .dialog { border:1px solid var(--accent); border-radius:8px; padding:10px 12px; margin-top:10px; max-width:520px; }
+  .dialog p { margin:0 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Bản phác màn hình chính của tool gán nhãn mắt</h1>
+  <p class="note">Bản phác để xem bố cục, chưa phải giao diện thật. Hình mắt chỉ là minh hoạ, không phải ảnh tài xế.</p>
+
+  <div class="panel bar">
+    <span><b>Job 1012</b> · 200 frame</span><span class="tag">đã đăng nhập CVAT nội bộ</span>
+    <span class="sep"></span>
+    <span class="seg"><span>Shape</span><span class="on">Track</span></span>
+    <button class="btn">Hint</button>
+    <span>Khoảng <b>0</b> đến <b>20</b></span><button class="btn">Chạy gợi ý cho khoảng</button>
+    <span class="sep"></span>
+    <button class="btn">Vẽ 4 điểm</button>
+    <span class="seg"><span class="on">A</span><span>A + B</span></span>
+    <span class="sep"></span>
+    <button class="btn">Quét</button><button class="btn">Hoàn tác</button>
+    <button class="btn primary">Apply · 12 thay đổi chưa ghi</button>
+  </div>
+
+  <div class="grid">
+    <div class="panel">
+      <p class="label">Frame 4 · đang sửa · kéo điểm để chỉnh</p>
+      <svg class="frame" viewBox="0 0 640 300" role="img" aria-label="Frame đang sửa với nhãn hai mắt">
+        <path d="M95 152 Q188 78 285 150 Q190 205 95 152Z" fill="#8c8c8c"/><circle cx="190" cy="146" r="30" fill="#222"/>
+        <path d="M355 150 Q452 78 545 152 Q450 205 355 150Z" fill="#8c8c8c"/><circle cx="450" cy="146" r="30" fill="#222"/>
+        <polygon points="92,155 133,126 186,111 240,124 283,153 243,175 188,186 136,177" fill="none" stroke="#ffd54a" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <polygon points="357,153 400,124 454,110 507,126 547,155 504,177 452,186 397,175" fill="none" stroke="#ffd54a" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <polygon points="95,152 135,122 188,106 242,120 285,150 245,172 190,182 138,174" fill="none" stroke="#39e06b" stroke-width="2"/>
+        <polygon points="355,150 398,120 452,106 505,122 545,152 502,174 450,182 395,172" fill="none" stroke="#4ab8ff" stroke-width="2"/>
+        <g fill="#565656" stroke="#39e06b" stroke-width="2"><circle cx="135" cy="122" r="4"/><circle cx="242" cy="120" r="4"/><circle cx="245" cy="172" r="4"/><circle cx="138" cy="174" r="4"/></g>
+        <g fill="#565656" stroke="#4ab8ff" stroke-width="2"><circle cx="398" cy="120" r="4"/><circle cx="505" cy="122" r="4"/><circle cx="502" cy="174" r="4"/><circle cx="395" cy="172" r="4"/></g>
+        <g fill="#39e06b" stroke="#fff" stroke-width="1.5"><circle cx="95" cy="152" r="7"/><circle cx="188" cy="106" r="7"/><circle cx="285" cy="150" r="7"/><circle cx="190" cy="182" r="7"/></g>
+        <g fill="#4ab8ff" stroke="#fff" stroke-width="1.5"><circle cx="355" cy="150" r="7"/><circle cx="452" cy="106" r="7"/><circle cx="545" cy="152" r="7"/><circle cx="450" cy="182" r="7"/></g>
+        <g font-size="13" font-family="sans-serif" fill="#fff"><text x="72" y="148">14</text><text x="180" y="94">16</text><text x="292" y="146">18</text><text x="182" y="204">20</text><text x="332" y="146">22</text><text x="444" y="94">24</text><text x="552" y="148">26</text><text x="442" y="204">28</text></g>
+        <g font-size="11" font-family="sans-serif" fill="#ddd"><text x="118" y="114">15</text><text x="246" y="112">17</text><text x="250" y="188">19</text><text x="122" y="190">21</text><text x="382" y="112">23</text><text x="510" y="114">25</text><text x="506" y="190">27</text><text x="380" y="188">29</text></g>
+        <text x="14" y="24" font-size="14" font-family="sans-serif" fill="#39e06b">mattrai</text>
+        <text x="570" y="24" font-size="14" font-family="sans-serif" fill="#4ab8ff">matphai</text>
+      </svg>
+      <div class="legend">
+        <span>● điểm to: 4 điểm chính bạn đặt</span><span>○ điểm nhỏ: tool suy ra</span>
+        <span class="warn">┅ nét đứt vàng: gợi ý của model</span><span>Trỏ vào điểm rồi bấm phím để đặt Visible / Occluded / Outside</span>
+      </div>
+      <div class="dialog">
+        <p><b>Ghim frame 3 để nó không bị kéo theo?</b><br><span class="tag">Hộp hỏi này hiện khi bạn bắt đầu sửa frame 4 mà frame 3 chưa là keyframe đủ 8 điểm.</span></p>
+        <button class="btn primary">Ghim</button> <button class="btn">Không ghim</button> <button class="btn">Luôn ghim trong phiên này</button>
+      </div>
+    </div>
+
+    <div class="stack">
+      <div class="panel">
+        <p class="label">Frame 3 · chỉ để so sánh</p>
+        <svg class="frame" viewBox="40 60 520 170" role="img" aria-label="Frame 3 so với frame 4">
+          <path d="M95 152 Q188 82 285 150 Q190 203 95 152Z" fill="#8c8c8c"/><circle cx="190" cy="147" r="30" fill="#222"/>
+          <path d="M355 150 Q452 82 545 152 Q450 203 355 150Z" fill="#8c8c8c"/><circle cx="450" cy="147" r="30" fill="#222"/>
+          <polygon points="95,152 135,122 188,106 242,120 285,150 245,172 190,182 138,174" fill="none" stroke="#39e06b" stroke-width="2" stroke-dasharray="7 5"/>
+          <polygon points="95,153 135,126 188,112 242,124 285,151 245,173 190,183 138,175" fill="none" stroke="#fff" stroke-width="3"/>
+          <polygon points="355,151 398,124 452,112 505,126 545,153 502,175 450,183 395,173" fill="none" stroke="#fff" stroke-width="3"/>
+        </svg>
+        <p class="cap">Trắng: nhãn frame 3 · xanh đứt: nhãn frame 4.<br>Khác nhau nhiều nhất: điểm 16, <b>6 px</b>.</p>
+      </div>
+      <div class="panel">
+        <p class="label">Frame 5 · sẽ đổi theo frame 4</p>
+        <svg class="frame" viewBox="40 60 520 170" role="img" aria-label="Frame 5 trước và sau khi sửa frame 4">
+          <path d="M95 152 Q188 118 285 150 Q190 176 95 152Z" fill="#8c8c8c"/><circle cx="190" cy="150" r="16" fill="#222"/>
+          <path d="M355 150 Q452 118 545 152 Q450 176 355 150Z" fill="#8c8c8c"/><circle cx="450" cy="150" r="16" fill="#222"/>
+          <polygon points="95,152 135,134 188,128 242,133 285,150 245,165 190,170 138,166" fill="none" stroke="#ddd" stroke-width="3" stroke-dasharray="8 6"/>
+          <polygon points="95,152 135,124 188,110 242,122 285,150 245,170 190,180 138,172" fill="none" stroke="#39e06b" stroke-width="3"/>
+          <polygon points="355,150 398,124 452,110 505,124 545,152 502,172 450,180 395,170" fill="none" stroke="#4ab8ff" stroke-width="3"/>
+        </svg>
+        <p class="cap">Xám đứt: trước khi sửa · màu: sau khi sửa.<br><span class="bad">Dịch nhiều nhất: điểm 16, <b>18 px</b> (trên ngưỡng 15 px).</span></p>
+      </div>
+      <div class="panel">
+        <p class="label">Frame cần chú ý · sau khi quét</p>
+        <ul class="list">
+          <li><span class="dot r"></span><span class="fnum">112</span><span>mattrai · điểm 16, 20 · mí trên nằm dưới mí dưới</span></li>
+          <li><span class="dot r"></span><span class="fnum">45</span><span>matphai · điểm 22 · không phải điểm trái nhất</span></li>
+          <li><span class="dot y"></span><span class="fnum">31 – 199</span><span>mattrai · nhãn đứng yên trong khi mặt di chuyển</span></li>
+          <li><span class="dot y"></span><span class="fnum">188</span><span>mattrai · điểm 14 nhảy 22 px</span></li>
+          <li><span class="dot y"></span><span class="fnum">8</span><span>mattrai · keyframe thiếu, mới ghim 3/8 điểm</span></li>
+          <li><span class="dot g"></span><span class="fnum">13</span><span>model không ổn định, không có gợi ý</span></li>
+        </ul>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:10px">
+    <p class="label">Dòng thời gian · bạn tự chia đoạn theo người</p>
+    <div class="people"><div>Người 1 · frame 0 – 79</div><div>Người 2 · 80 – 139</div><div>Người 3 · 140 – 199</div></div>
+    <div class="strip" id="strip"></div>
+    <div class="legend">
+      <span>◆ keyframe đủ 8 điểm</span><span class="warn">◈ keyframe thiếu</span><span>○ nội suy</span><span>· chưa có nhãn</span>
+      <span>nền xanh nhạt: khoảng đang chọn</span><span class="bad">viền đỏ / </span><span class="warn">viền vàng: frame cần chú ý</span>
+    </div>
+  </div>
+</div>
+<script>
+  // Dữ liệu minh hoạ cho 40 frame đầu của dòng thời gian.
+  const full = new Set([0, 4, 10, 16, 20]), partial = new Set([8]), empty = new Set([13]);
+  const red = new Set([]), yellow = new Set([8]), strip = document.getElementById('strip');
+  for (let f = 0; f < 40; f++) {
+    const c = document.createElement('div');
+    const mark = f > 20 ? '·' : empty.has(f) ? '·' : full.has(f) ? '◆' : partial.has(f) ? '◈' : '○';
+    c.className = 'cell' + (f <= 20 ? ' sel' : '') + (f === 4 ? ' cur' : '') + (red.has(f) ? ' r' : '') + (yellow.has(f) ? ' y' : '');
+    c.innerHTML = '<span class="m">' + mark + '</span>' + f;
+    strip.appendChild(c);
+  }
+</script>
+</body>
+</html>
