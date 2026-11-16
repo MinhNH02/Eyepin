@@ -429,8 +429,9 @@ class GuiTests(unittest.TestCase):
         app.settings["display"] = {"brightness": 30}
         app._apply_settings_to_look()
         self.assertEqual(app.look.brightness, 100.0)
-        self.assertIn("thang của CVAT", app.notice)
-        self.assertEqual(app.settings["display"]["color_scale"], "cvat")
+        app.refresh()
+        self.assertIn("thang của CVAT", app.status.get())
+        self.assertNotIn("brightness", app.settings["display"])
 
     def test_filter_search_and_objects_panel(self):
         app, seq = self.make_app()

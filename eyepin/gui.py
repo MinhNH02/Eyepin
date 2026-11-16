@@ -142,6 +142,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.manual = None
         self.show_ids = True
         self.look = Look(eyes={l: True for l in EYES})
+        self.notice = ""
+        self._pending_notice = ""           # báo một lần ở lần vẽ đầu có phiên (mở thư mục, khôi phục phiên, --pins đều ghi đè `notice`)
         self._apply_settings_to_look()
         self.hide_labels = False
         self.main_size = MAIN
@@ -160,7 +162,6 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.hover: tuple[int, int] | None = None
         self._pan = None
         self._left_pan = False
-        self.notice = ""
         self.scratch = False                 # True khi mở bằng --pins: không khôi phục, không ghi file phiên (bản demo không đụng phiên đã lưu)
         self._scratch_pins: dict | None = None   # dữ liệu --pins đã nạp (để mở lại file nhãn cùng thư mục mà không mất ghim)
         self._turns_sig: tuple = ()          # chữ ký các đoạn quay đầu đang hiện ở tab Issues
@@ -617,12 +618,13 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.look.text_always = bool(ws.get("text_always", False))
         self.look.text_content = tuple(ws.get("text_content", ("id", "label", "source")))
         self.look.font_size = float(ws.get("font_size", 1.0))
-        if imagefx.migrate_display(self.settings["display"]):           # thang cũ (cộng) không đổi được sang thang % của CVAT
-            self.save_settings()
-            if self.settings["workspace"]["remember_display"]:
-                self.notice = "Độ sáng, tương phản, bão hoà đã về mặc định vì EyePin đổi sang thang của CVAT (50–200%)."
+        # thang cũ (cộng) không đổi được sang thang % của CVAT: bỏ trong bộ nhớ (lưu lại lúc đóng, không ghi đĩa lúc khởi động)
+        if imagefx.migrate_display(self.settings["display"]) and self.settings["workspace"]["remember_display"]:
+            self._pending_notice = "Độ sáng, tương phản, bão hoà đã về mặc định vì EyePin đổi sang thang của CVAT (50–200%)."
         if self.settings["workspace"]["remember_display"]:
+            attr_of = {v: k for k, v in imagefx.STORE_KEYS.items()}       # brightness_pct -> brightness
             for k, v in self.settings["display"].items():
+                k = attr_of.get(k, k)
                 if k in DISPLAY_KEYS and hasattr(self.look, k):
                     setattr(self.look, k, v)
         self.show_ids = self.look.ids
@@ -750,7 +752,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             return
         if not self.confirm_close():
             return
-        self.settings["display"] = {k: getattr(self.look, k) for k in DISPLAY_KEYS} | {"color_scale": "cvat"}
+        self.settings["display"] = {imagefx.STORE_KEYS.get(k, k): getattr(self.look, k) for k in DISPLAY_KEYS}   # thang % dưới khoá mới
         try:
             sc.save_settings(self.settings)
         except OSError:
@@ -2300,6 +2302,9 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         if look.grid:                                                    # bước lưới đang vẽ thật (tự thưa khi thu nhỏ)
             text += f" · lưới {imagefx.grid_step(look.grid_size, view.k)} px"
         text = self._cvat_status(text)
+        if self._pending_notice:                                         # thông báo một lần (đổi thang màu): đi kèm thông báo đầu tiên
+            self.notice = f"{self._pending_notice} {self.notice}".strip()
+            self._pending_notice = ""
         if self.notice:
             text = f"{self.notice}   |   {text}"
         self.status.set(text)

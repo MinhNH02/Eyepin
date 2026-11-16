@@ -110,6 +110,71 @@ class ImageSetupsTests(unittest.TestCase):
         self.assertFalse(np.array_equal(off, img(guide=True, selected="mattrai")))
         self.assertTrue(np.array_equal(img(guide=False, selected=None), img(guide=True, selected=None)))
 
+    # ---- cài đặt lưu trên đĩa: thang cũ, khoá mới ----
+    def old_home(self, display):
+        """EYEPIN_HOME tạm có settings.json chứa `display`, đặt TRƯỚC khi tạo App (đường khởi động thật)."""
+        import json
+        import shutil
+        import tempfile
+        from eyepin import shortcuts as sc
+        home = tempfile.mkdtemp(prefix="eyepin_home_")
+        self.addCleanup(shutil.rmtree, home, True)
+        prev = os.environ.get("EYEPIN_HOME")
+        os.environ["EYEPIN_HOME"] = home
+        self.addCleanup(lambda: os.environ.__setitem__("EYEPIN_HOME", prev) if prev else os.environ.pop("EYEPIN_HOME", None))
+        path = sc.settings_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"display": display, "workspace": {"remember_display": True}}), encoding="utf-8")
+        return path
+
+    def test_startup_with_old_scale_settings_notifies_and_does_not_write(self):
+        from eyepin.gui import App
+        path = self.old_home({"brightness": 30, "contrast": 1.2})
+        before = path.read_bytes()
+        app = App(self.root)
+        self.assertEqual((app.look.brightness, app.look.contrast), (100.0, 100.0))
+        self.assertEqual(path.read_bytes(), before)              # khởi động không ghi file cài đặt
+        app.load(self.dir, None)                                 # mở thư mục như dòng lệnh `gui <thư mục>`
+        app.root.update()
+        self.assertIn("thang của CVAT", app.status.get())
+
+    def test_old_scale_notice_survives_opening_a_folder(self):
+        """Mở thư mục ngay sau khi khởi động (khôi phục phiên, --pins) ghi đè `notice`: thông báo đổi thang vẫn phải hiện một lần."""
+        from eyepin.gui import App
+        T = _tg.T
+        self.old_home({"brightness": 30})
+        app = App(self.root)
+        pins = {str(f): {str(i): list(p) for i, p in T.pins_at(f).items()} for f in (0, 20)}
+        app.load(self.dir, None, pins=pins)
+        app.root.update()
+        self.assertIn("thang của CVAT", app.status.get())
+        app.go(1)                                                # thông báo giữ tới khi có thông báo mới (như mọi thông báo), không ghép lặp
+        self.assertEqual(app.status.get().count("thang của CVAT"), 1)
+        self.assertEqual(app._pending_notice, "")
+
+    def test_startup_with_old_default_values_is_silent(self):
+        from eyepin.gui import App
+        self.old_home({"brightness": 0.0, "contrast": 1.0, "saturation": 1.0})
+        app = App(self.root)
+        app.load(self.dir, None)
+        app.root.update()
+        self.assertNotIn("thang của CVAT", app.status.get())    # không mất gì người dùng đã chỉnh: không báo
+
+    def test_new_scale_is_saved_under_new_keys_and_read_back(self):
+        """Bản EyePin cũ đọc `brightness` theo thang cộng: thang % phải lưu dưới khoá khác để bản cũ không biến ảnh thành đen trắng."""
+        import json
+        from unittest import mock
+        from eyepin.gui import App
+        path = self.old_home({"brightness_pct": 140.0})
+        app = App(self.root)
+        self.assertEqual(app.look.brightness, 140.0)
+        app.look.contrast = 150.0
+        with mock.patch.object(app.root, "destroy"):
+            app.on_close()
+        saved = json.loads(path.read_text(encoding="utf-8"))["display"]
+        self.assertEqual((saved["brightness_pct"], saved["contrast_pct"], saved["saturation_pct"]), (140.0, 150.0, 100.0))
+        self.assertFalse({"brightness", "contrast", "saturation"} & set(saved))
+
     def test_shortcuts_guide_lists_new_actions(self):
         from eyepin import shortcuts as sc
         self.assertEqual(sc.BY_ID["grid"].keys, ("g",))

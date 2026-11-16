@@ -165,20 +165,23 @@ class AxisGuideTests(unittest.TestCase):
 
 
 class MigrateTests(unittest.TestCase):
-    def test_migrate_drops_old_scale(self):
+    def test_migrate_drops_old_keys_and_reports_changed_values(self):
         d = {"brightness": 30, "contrast": 1.2, "saturation": 1.0, "size": 1.5}
         self.assertTrue(imagefx.migrate_display(d))
-        self.assertEqual(d, {"size": 1.5, "color_scale": "cvat"})
+        self.assertEqual(d, {"size": 1.5})
 
-    def test_migrate_keeps_new_scale(self):
-        d = {"brightness": 150, "color_scale": "cvat"}
+    def test_migrate_is_silent_when_old_values_were_defaults(self):
+        d = {"brightness": 0.0, "contrast": 1.0, "saturation": 1.0}
         self.assertFalse(imagefx.migrate_display(d))
-        self.assertEqual(d, {"brightness": 150, "color_scale": "cvat"})
+        self.assertEqual(d, {})
 
-    def test_migrate_marks_an_empty_dict(self):
-        d = {}
+    def test_migrate_keeps_new_keys(self):
+        d = {"brightness_pct": 150.0, "gamma": 1.4}
         self.assertFalse(imagefx.migrate_display(d))
-        self.assertEqual(d, {"color_scale": "cvat"})
+        self.assertEqual(d, {"brightness_pct": 150.0, "gamma": 1.4})
+
+    def test_store_keys_differ_from_old_keys(self):
+        self.assertEqual(imagefx.STORE_KEYS, {"brightness": "brightness_pct", "contrast": "contrast_pct", "saturation": "saturation_pct"})
 
 
 if __name__ == "__main__":

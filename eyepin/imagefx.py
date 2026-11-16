@@ -12,7 +12,10 @@ import numpy as np
 
 COLOR_DEFAULTS = {"brightness": 100.0, "contrast": 100.0, "saturation": 100.0, "gamma": 1.0}
 COLOR_RANGES = {"brightness": (50, 200), "contrast": (50, 200), "saturation": (0, 300), "gamma": (0.2, 2.6)}
-OLD_SCALE_KEYS = ("brightness", "contrast", "saturation")
+# Khoá lưu trong settings.json ("display") của thang %: khác khoá cũ, vì bản EyePin cũ đọc `brightness`… theo thang cộng/nhân cũ và sẽ biến
+# ảnh thành gần như đen trắng nếu gặp 100 (hai bản cùng dùng ~/.eyepin/settings.json, ví dụ hai nhánh chạy song song).
+STORE_KEYS = {"brightness": "brightness_pct", "contrast": "contrast_pct", "saturation": "saturation_pct"}
+OLD_DEFAULTS = {"brightness": 0.0, "contrast": 1.0, "saturation": 1.0}         # mặc định của thang cũ
 
 
 def _tone_lut(brightness: float, contrast: float, gamma: float) -> np.ndarray:
@@ -154,13 +157,14 @@ def readout(u, img_w: int, img_h: int, pts: dict | None) -> str:
 
 
 def migrate_display(display: dict) -> bool:
-    """Giá trị độ sáng, tương phản, bão hoà lưu theo thang cũ của EyePin (cộng −100..100, nhân 0,3..3) không đổi được sang thang của CVAT,
-    nên bỏ đi để về mặc định. Đánh dấu `color_scale = "cvat"`. Trả True khi có bỏ ít nhất một giá trị."""
-    dropped = False
-    if display.get("color_scale") != "cvat":
-        for k in OLD_SCALE_KEYS:
-            if k in display:
-                del display[k]
-                dropped = True
-    display["color_scale"] = "cvat"
-    return dropped
+    """Bỏ khoá `brightness`, `contrast`, `saturation` (chỉ bản EyePin cũ ghi, theo thang cộng −100..100 / nhân 0,3..3, không đổi được sang
+    thang % của CVAT; bản này lưu dưới `STORE_KEYS`). Trả True khi có giá trị cũ khác mặc định cũ: người dùng đã chỉnh và nay mất, nên báo."""
+    changed = False
+    for k, default in OLD_DEFAULTS.items():
+        if k in display:
+            v = display.pop(k)
+            try:
+                changed |= abs(float(v) - default) > 1e-9
+            except (TypeError, ValueError):
+                changed = True
+    return changed
