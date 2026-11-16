@@ -47,6 +47,55 @@ def apply_color(img: np.ndarray, brightness: float, contrast: float, saturation:
     return out
 
 
+GRID_COLORS = {"White": (255, 255, 255), "Black": (0, 0, 0), "Red": (0, 0, 255), "Green": (0, 255, 0), "Blue": (255, 0, 0)}   # BGR
+GRID_SIZE_RANGE = (1, 1000)            # CVAT cho 5–1000; EyePin cho xuống 1 (lưới từng pixel)
+GRID_MIN_PX = 8.0                      # hai đường gần nhau hơn thế trên màn hình thì lưới tự thưa ra (nét 1 px cách 4 px vẫn phủ ~40% ảnh)
+
+
+def grid_step(size: int, k: float, min_px: float = GRID_MIN_PX) -> int:
+    """Bước lưới thật sự vẽ (pixel ảnh): `size` nhân lần lượt ×1, ×5, ×10, ×50, ×100… tới khi hai đường cách nhau ít nhất `min_px` px màn hình."""
+    size = max(1, int(size))
+    if k <= 0:
+        return size
+    m, five = 1, True
+    while size * m * k < min_px:
+        m *= 5 if five else 2
+        five = not five
+    return size * m
+
+
+def draw_grid(img: np.ndarray, view, img_w: int, img_h: int, size: int, color: str, opacity: float) -> int:
+    """Vẽ lưới vuông lên ảnh màn hình `img` (tại chỗ), như Image grid của CVAT: đường tại toạ độ ảnh nguyên chia hết cho bước, từ góc ảnh,
+    nên trùng mép pixel (pixel i phủ [i, i+1)); nét 1 px; chỉ trong khung ảnh. `view` có x0, y0, k (render.View). Trả bước đã vẽ."""
+    step = grid_step(size, view.k)
+    h, w = img.shape[:2]
+    a = max(0.0, min(1.0, float(opacity) / 100.0))
+    if a <= 0:
+        return step
+    col = np.array(GRID_COLORS.get(color, GRID_COLORS["White"]), np.float32)
+
+    def screen(u, origin):
+        return np.floor((np.asarray(u, np.float64) - origin) * view.k).astype(np.int64)
+
+    c0, c1 = max(0, int(screen(0, view.x0))), min(w, int(np.ceil((img_w - view.x0) * view.k)))
+    r0, r1 = max(0, int(screen(0, view.y0))), min(h, int(np.ceil((img_h - view.y0) * view.k)))
+    if c0 >= c1 or r0 >= r1:
+        return step
+    cols = screen(np.arange(0, img_w + 1, step), view.x0)
+    rows = screen(np.arange(0, img_h + 1, step), view.y0)
+    cols = np.unique(cols[(cols >= 0) & (cols < w)])
+    rows = np.unique(rows[(rows >= 0) & (rows < h)])
+
+    def blend(block):
+        return np.rint(block.astype(np.float32) * (1 - a) + col * a).astype(np.uint8)
+
+    if cols.size:
+        img[r0:r1, cols] = blend(img[r0:r1, cols])
+    if rows.size:
+        img[rows, c0:c1] = blend(img[rows, c0:c1])
+    return step
+
+
 def migrate_display(display: dict) -> bool:
     """Giá trị độ sáng, tương phản, bão hoà lưu theo thang cũ của EyePin (cộng −100..100, nhân 0,3..3) không đổi được sang thang của CVAT,
     nên bỏ đi để về mặc định. Đánh dấu `color_scale = "cvat"`. Trả True khi có bỏ ít nhất một giá trị."""

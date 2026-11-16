@@ -37,6 +37,10 @@ class Look:
     contrast: float = 100.0      # % (50..200), quanh mức xám giữa
     saturation: float = 100.0    # % (0..300), 0 = đen trắng
     gamma: float = 1.0           # 0,2..2,6 như Gamma của CVAT (bảng tra pow(v, 1/gamma)), áp trước độ sáng
+    grid: bool = False           # lưới ảnh (Image grid của CVAT); vẽ vào ảnh nền nên xoay theo ảnh
+    grid_size: int = 100         # pixel ảnh, 1..1000 (CVAT 5..1000); tự thưa khi thu nhỏ (imagefx.grid_step)
+    grid_color: str = "White"    # một khoá của imagefx.GRID_COLORS
+    grid_opacity: float = 100.0  # %, 0..100
     smooth: bool = True          # làm mịn ảnh khi phóng to (tắt thì thấy từng pixel)
     bg: tuple = (40, 40, 40)     # màu nền ngoài ảnh (BGR)
     selected_opacity: float = 1.0   # độ đặc riêng của mắt đang chọn
@@ -255,7 +259,11 @@ def render_base(session: Session, f: int, size: tuple[int, int], view: View, loo
     trong lúc kéo điểm, xoay nhãn: những lúc đó chỉ phần nhãn đổi."""
     look = look or Look()
     src = look.adjust(session.bgr(f)) if look.image else np.full_like(session.bgr(f), look.bg)
-    return warp_image(src, view, size, look.smooth, look.bg)
+    tiny_grid = look.grid and look.grid_size <= 2                    # lưới từng pixel: hiện pixel rõ để mỗi ô trùng một pixel
+    out = warp_image(src, view, size, look.smooth and not tiny_grid, look.bg)
+    if look.grid:
+        imagefx.draw_grid(out, view, session.width, session.height, look.grid_size, look.grid_color, look.grid_opacity)
+    return out
 
 
 def warp_image(src: np.ndarray, view: View, size: tuple[int, int], smooth: bool, bg: tuple) -> np.ndarray:

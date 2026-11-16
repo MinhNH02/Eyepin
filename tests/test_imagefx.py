@@ -54,6 +54,60 @@ class ColorTests(unittest.TestCase):
         self.assertEqual(imagefx.apply_color(a, 120, 80, 150, 1.4).shape, (5, 7, 3))
 
 
+class GridTests(unittest.TestCase):
+    @staticmethod
+    def view(x0, y0, k):
+        from eyepin.render import View
+        return View(x0, y0, k, 400, 300)
+
+    def test_grid_step_thins_out(self):
+        self.assertEqual(imagefx.grid_step(100, 1.0), 100)
+        self.assertEqual(imagefx.grid_step(1, 8.0), 1)
+        self.assertEqual(imagefx.grid_step(1, 1.0), 10)
+        self.assertEqual(imagefx.grid_step(1, 0.2), 50)
+        self.assertEqual(imagefx.grid_step(5, 0.5), 25)
+
+    def test_grid_lines_on_pixel_edges(self):
+        img = np.zeros((300, 400, 3), np.uint8)
+        self.assertEqual(imagefx.draw_grid(img, self.view(0, 0, 8), 40, 30, 5, "White", 100), 5)
+        self.assertTrue((img[0:240, 40] == 255).all())          # đường dọc tại u = 5: mép trái pixel 5
+        self.assertTrue((img[1:40, 41] == 0).all())             # cột kế bên đen (trừ chỗ đường ngang cắt qua: hàng 0, 40, 80…)
+        self.assertTrue((img[40, 0:320] == 255).all())          # đường ngang tại v = 5
+        self.assertEqual(img[100, 350].tolist(), [0, 0, 0])      # ngoài ảnh: không vẽ
+        self.assertEqual(img[260, 100].tolist(), [0, 0, 0])
+
+    def test_grid_line_column_is_floor_of_screen_position(self):
+        img = np.zeros((300, 400, 3), np.uint8)
+        imagefx.draw_grid(img, self.view(0.3, 0, 8), 40, 30, 5, "Red", 100)
+        self.assertEqual(img[100, 37].tolist(), [0, 0, 255])     # (5 − 0,3)·8 = 37,6 → cột 37; màu BGR
+
+    def test_grid_opacity_blends(self):
+        img = np.zeros((300, 400, 3), np.uint8)
+        imagefx.draw_grid(img, self.view(0, 0, 8), 40, 30, 5, "White", 50)
+        self.assertIn(int(img[100, 40, 0]), (127, 128))
+
+    def test_zoomed_out_size_one_does_not_gray_the_image(self):
+        img = np.zeros((300, 400, 3), np.uint8)
+        self.assertEqual(imagefx.draw_grid(img, self.view(0, 0, 0.2), 1024, 576, 1, "White", 100), 50)
+        region = img[0:116, 0:205]
+        self.assertLess(float((region.max(axis=2) > 0).mean()), 0.25)
+
+    def test_tiny_grid_turns_off_smoothing(self):
+        from eyepin.render import Look, View, render_base
+
+        class Stub:
+            width, height = 40, 30
+
+            def bgr(self, f):
+                rng = np.random.default_rng(0)
+                return rng.integers(0, 255, (30, 40, 3), dtype=np.uint8)
+
+        v = View(0, 0, 8, 320, 240)
+        on = render_base(Stub(), 0, (320, 240), v, Look(grid=True, grid_size=2, smooth=True, grid_opacity=0))
+        sharp = render_base(Stub(), 0, (320, 240), v, Look(smooth=False))
+        self.assertTrue((on == sharp).all())                     # Opacity 0: chỉ còn ảnh, và ảnh không làm mịn
+
+
 class MigrateTests(unittest.TestCase):
     def test_migrate_drops_old_scale(self):
         d = {"brightness": 30, "contrast": 1.2, "saturation": 1.0, "size": 1.5}

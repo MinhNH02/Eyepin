@@ -44,7 +44,7 @@ THUMB = (300, 140)
 PIN_SEQ = [(label, pid) for label, spec in EYES.items() for pid in spec.pins]       # 8 điểm (chỉ dùng để đếm và cho test)
 PIN_COUNT = {"full": 8, "hidden": 7, "one": 4, "draw4": 4}
 DRAW_LABELS = {"mattrai": "mattrai (mắt trái)", "matphai": "matphai (mắt phải)"}
-DISPLAY_KEYS = ("size", "opacity", "brightness", "contrast", "saturation", "gamma", "top", "outline", "points", "ids", "selected_opacity", "color_by",
+DISPLAY_KEYS = ("size", "opacity", "brightness", "contrast", "saturation", "gamma", "grid", "grid_size", "grid_color", "grid_opacity", "top", "outline", "points", "ids", "selected_opacity", "color_by",
                 "outlined")
 
 
@@ -2128,7 +2128,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             self._auto_view, self._auto_key = view, fit_key
         # ảnh nền chỉ dựng lại khi frame, khung nhìn, hướng xoay hoặc chỉnh ảnh đổi; kéo điểm, xoay nhãn chỉ vẽ lại phần nhãn
         key = (self.f, round(view.x0, 3), round(view.y0, 3), round(view.k, 5), size, self.rot, look.image, look.brightness, look.contrast,
-               look.saturation, look.gamma, look.smooth, look.bg)
+               look.saturation, look.gamma, look.smooth, look.bg, look.grid, look.grid_size, look.grid_color, look.grid_opacity)
         if key != self._base_key:
             base = render_base(s, self.f, size, view, look)
             self._base_raw = base
