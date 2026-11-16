@@ -29,6 +29,7 @@ from PIL import Image, ImageTk
 from .geometry import EYES, MATTRAI, assign_roles, assign_three, derive, four_in_box
 from .render import (PIN_IDS, Look, RESIZE_HIT, ROTATE_DIST, ROTATE_HIT, draw_overlay, make_view, max_shift, render_base, render_main,
                      render_thumb, render_timeline, resize_handles, status_text)
+from . import imagefx
 from . import shortcuts as sc
 from . import theme
 from .cvatapi import CvatError
@@ -43,7 +44,7 @@ THUMB = (300, 140)
 PIN_SEQ = [(label, pid) for label, spec in EYES.items() for pid in spec.pins]       # 8 điểm (chỉ dùng để đếm và cho test)
 PIN_COUNT = {"full": 8, "hidden": 7, "one": 4, "draw4": 4}
 DRAW_LABELS = {"mattrai": "mattrai (mắt trái)", "matphai": "matphai (mắt phải)"}
-DISPLAY_KEYS = ("size", "opacity", "brightness", "contrast", "saturation", "top", "outline", "points", "ids", "selected_opacity", "color_by",
+DISPLAY_KEYS = ("size", "opacity", "brightness", "contrast", "saturation", "gamma", "top", "outline", "points", "ids", "selected_opacity", "color_by",
                 "outlined")
 
 
@@ -377,8 +378,9 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self._display_dlg = dlg
         self._adj_vars = {}
         rows = (("size", f"Cỡ điểm ({self.kl('marker_down')} {self.kl('marker_up')})", 0.4, 3.0, 1.0), ("opacity", "Độ đặc nhãn", 0.15, 1.0, 1.0),
-                ("selected_opacity", "Độ đặc mắt đang chọn", 0.15, 1.0, 1.0), ("brightness", "Độ sáng", -100, 100, 0), ("contrast", "Tương phản", 0.3, 3.0, 1.0),
-                ("saturation", "Bão hoà", 0.0, 2.0, 1.0))
+                ("selected_opacity", "Độ đặc mắt đang chọn", 0.15, 1.0, 1.0),
+                *((n, text, *imagefx.COLOR_RANGES[n], imagefx.COLOR_DEFAULTS[n])
+                  for n, text in (("brightness", "Độ sáng (%)"), ("contrast", "Tương phản (%)"), ("saturation", "Bão hoà (%)"), ("gamma", "Gamma"))))
         for r, (name, text, lo, hi, init) in enumerate(rows):
             ttk.Label(dlg, text=text).grid(row=r, column=0, sticky="w", padx=8, pady=3)
             v = tk.DoubleVar(value=init)
@@ -514,6 +516,10 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.look.text_always = bool(ws.get("text_always", False))
         self.look.text_content = tuple(ws.get("text_content", ("id", "label", "source")))
         self.look.font_size = float(ws.get("font_size", 1.0))
+        if imagefx.migrate_display(self.settings["display"]):           # thang cũ (cộng) không đổi được sang thang % của CVAT
+            self.save_settings()
+            if self.settings["workspace"]["remember_display"]:
+                self.notice = "Độ sáng, tương phản, bão hoà đã về mặc định vì EyePin đổi sang thang của CVAT (50–200%)."
         if self.settings["workspace"]["remember_display"]:
             for k, v in self.settings["display"].items():
                 if k in DISPLAY_KEYS and hasattr(self.look, k):
@@ -641,7 +647,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             return
         if not self.confirm_close():
             return
-        self.settings["display"] = {k: getattr(self.look, k) for k in DISPLAY_KEYS}
+        self.settings["display"] = {k: getattr(self.look, k) for k in DISPLAY_KEYS} | {"color_scale": "cvat"}
         try:
             sc.save_settings(self.settings)
         except OSError:
@@ -1851,10 +1857,12 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.refresh()
 
     def reset_adjust(self):
-        for n, init in (("brightness", 0.0), ("contrast", 1.0), ("saturation", 1.0)):
-            self._adj_vars[n].set(init)
+        """Như nút "Reset color settings" của CVAT: độ sáng, tương phản, bão hoà, gamma về mặc định; không đụng lưới."""
+        for n, init in imagefx.COLOR_DEFAULTS.items():
+            if n in self._adj_vars:
+                self._adj_vars[n].set(init)
             setattr(self.look, n, init)
-        self.notice = "Đã đặt lại độ sáng, tương phản, bão hoà."
+        self.notice = "Đã đặt lại độ sáng, tương phản, bão hoà, gamma."
         self.refresh()
 
     def _sync_top(self):
@@ -2120,7 +2128,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             self._auto_view, self._auto_key = view, fit_key
         # ảnh nền chỉ dựng lại khi frame, khung nhìn, hướng xoay hoặc chỉnh ảnh đổi; kéo điểm, xoay nhãn chỉ vẽ lại phần nhãn
         key = (self.f, round(view.x0, 3), round(view.y0, 3), round(view.k, 5), size, self.rot, look.image, look.brightness, look.contrast,
-               look.saturation, look.smooth, look.bg)
+               look.saturation, look.gamma, look.smooth, look.bg)
         if key != self._base_key:
             base = render_base(s, self.f, size, view, look)
             self._base_raw = base

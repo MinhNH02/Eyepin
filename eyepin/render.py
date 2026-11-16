@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from . import imagefx
 from .geometry import EYES, Point
 from .session import Session
 
@@ -32,9 +33,10 @@ class Look:
     ids: bool = True
     size: float = 1.0            # hệ số cỡ điểm và chữ số
     opacity: float = 1.0         # độ đặc của toàn bộ nhãn (1 = đặc)
-    brightness: float = 0.0      # -100..100, cộng vào mọi pixel (như Brightness của CVAT)
-    contrast: float = 1.0        # 0.3..3, nhân quanh mức xám giữa
-    saturation: float = 1.0      # 0 = đen trắng, 1 = gốc
+    brightness: float = 100.0    # % như Brightness của CVAT (50..200, nhân vào ảnh); xem imagefx.COLOR_RANGES
+    contrast: float = 100.0      # % (50..200), quanh mức xám giữa
+    saturation: float = 100.0    # % (0..300), 0 = đen trắng
+    gamma: float = 1.0           # 0,2..2,6 như Gamma của CVAT (bảng tra pow(v, 1/gamma)), áp trước độ sáng
     smooth: bool = True          # làm mịn ảnh khi phóng to (tắt thì thấy từng pixel)
     bg: tuple = (40, 40, 40)     # màu nền ngoài ảnh (BGR)
     selected_opacity: float = 1.0   # độ đặc riêng của mắt đang chọn
@@ -52,15 +54,8 @@ class Look:
         return [l for l in EYES if l != self.top] + [self.top]
 
     def adjust(self, img: np.ndarray) -> np.ndarray:
-        """Chỉnh độ sáng, tương phản, bão hoà của ảnh nền (chỉ để nhìn; không đổi ảnh gốc)."""
-        if self.brightness == 0 and self.contrast == 1 and self.saturation == 1:
-            return img
-        out = img.astype(np.float32)
-        if self.saturation != 1:
-            g = out.mean(axis=2, keepdims=True)
-            out = g + (out - g) * self.saturation
-        out = (out - 128) * self.contrast + 128 + self.brightness
-        return np.clip(out, 0, 255).astype(np.uint8)
+        """Chỉnh gamma, độ sáng, tương phản, bão hoà của ảnh nền như CVAT (chỉ để nhìn; không đổi ảnh gốc)."""
+        return imagefx.apply_color(img, self.brightness, self.contrast, self.saturation, self.gamma)
 
     def color_of(self, label: str, index: int = 0) -> tuple:
         """Màu vẽ mắt `label` (index là thứ tự đối tượng, bắt đầu từ 0) theo cách tô màu đang chọn."""
