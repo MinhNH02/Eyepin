@@ -47,6 +47,9 @@ Quy tắc: mỗi việc xong là tick `[x]` ngay trong file này, kèm ngày n�
 - [x] Điều khiển canvas: Con trỏ, Dời ảnh, Phóng to, Thu nhỏ, Vừa khung, Xoay ảnh 90° hai chiều
 - [x] Zoom bằng cuộn chuột, dời ảnh bằng chuột phải, giữa hoặc công cụ Dời ảnh
 - [x] Hộp hỏi khi đóng tool còn thay đổi chưa lưu (2026-11-16): Có = lưu rồi thoát, Không = thoát bỏ thay đổi, Huỷ = ở lại; lưu lỗi thì không thoát; mở bằng `--pins` chỉ hỏi "vẫn thoát?" vì không có file phiên. `App.confirm_close`, `tests/test_close_confirm.py`
+- [x] Lưới ảnh và chỉnh màu như hộp Image setups của CVAT (2026-11-16, khảo sát annotator; thiết kế `design/2026-11-16-grid-color-design.md`, kế hoạch `design/2026-11-16-grid-color-plan.md`): nút `^` giữa mép dưới khung ảnh / `Ctrl+G`; lưới (phím `g`, Size 1–1000, tự thưa khi hai đường gần hơn 8 px màn hình, màu, Opacity); Brightness/Contrast/Saturation theo % và Gamma như CVAT (giá trị lưu theo thang cũ về mặc định kèm thông báo); thước theo trục mắt đang chọn; toạ độ ảnh và khoảng cách tới điểm gần nhất ở góc phải dòng trạng thái. Module `eyepin/imagefx.py`; `tests/test_imagefx.py`, `tests/test_image_setups.py`. Đo `spike/perf_view.py` trên case 01 (khung vẽ 1498×817): trước khi sửa sang frame 67–85 ms, kéo điểm 15–21 ms; sau, lưới tắt 50–66 ms và 10–19 ms, lưới Size 100 49–86 ms và 9–17 ms, lưới Size 1 phóng ×8 78 ms và 10 ms (dao động giữa các lần chạy lớn hơn chênh lệch; `render_base` thêm 0,2 ms khi bật lưới)
+- [x] Sửa EyePin vẽ ảnh lệch nửa pixel so với CVAT (2026-11-16): đo trên CVAT 2.75 local, pixel i phủ [i, i+1) (`design/cvat-api-notes.md`, mục "Quy ước pixel"); `render.warp_image` bù nửa pixel. Ảnh nhỏ frame trước/sau (`render_thumb`) chưa bù, sai tối đa nửa pixel của ảnh nhỏ
+- [ ] Người dùng quyết: nhãn làm bằng EyePin trước ngày sửa lệch nửa pixel (2026-11-16) nằm lệch (−0,5; −0,5) px so với ảnh khi mở trên CVAT; có cần dời lại các nhãn đó không
 - [x] Độ nhạy chuột (2026-11-16, nhiều người dùng than chuột quá nhạy): Cài đặt (F2) > Workspace > "Độ nhạy chuột khi kéo", 0,1–3 lần, mặc định 1 = như cũ; nhân quãng chuột kéo kể từ chỗ bấm (kéo điểm, kéo cả mắt, xoay, vẽ khung, dời ảnh); cuộn chuột zoom vẫn chỉnh bằng "Hệ số zoom mỗi nấc". `tests/test_mouse_speed.py`
 - [ ] Phím tắt tăng giảm độ nhạy chuột ngay khi đang gán nhãn (hiện chỉ chỉnh trong F2)
 - [x] Khung ảnh co giãn theo cửa sổ; panel phải cố định rộng 350 px
@@ -147,6 +150,7 @@ Quy tắc: mỗi việc xong là tick `[x]` ngay trong file này, kèm ngày n�
 - [ ] `Ctrl+N` (người mới) vẫn ghim 8 điểm cùng lúc; đổi sang bảng Vẽ mắt cho thống nhất
 - [ ] Sang frame ở toàn màn hình vẫn khoảng 140 ms (đổ ảnh nền 1,9 triệu điểm ảnh vào Tk, `warpAffine` lập phương, hai ảnh thu nhỏ); phát (Space) ở toàn màn hình sẽ chậm hơn nhịp 120 ms
 - [ ] Vẽ lại `/archify`: luồng vẽ đổi (`render.draw_overlay` dùng chung cho ảnh và Canvas)
+- [ ] Vẽ lại `/archify` sau khi ghép nhánh `feature/grid-color` và nhánh của kế hoạch cvat-sidebar-icons vào `develop`: thêm module `imagefx.py` (màu, lưới, thước, chữ đo) giữa `gui`/`render`; vẽ trên mã đã ghép để không phải vẽ hai lần
 - [ ] Ghi nguồn gốc từng điểm ghim vào phiên (thay cách nhận ghim K/kéo một điểm bằng "trùng khít bám tiến" của `evaluate.py`)
 - [ ] MVP 3: bám lùi và bám hai chiều chọn theo độ khớp, chỉ dùng trong báo cáo (không đổi nhãn)
 - [ ] Sau khi đóng băng mã: vẽ lại `/archify`, cập nhật `CLAUDE.md`
