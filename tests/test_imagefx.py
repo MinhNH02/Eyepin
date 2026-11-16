@@ -130,6 +130,40 @@ class ReadoutTests(unittest.TestCase):
         self.assertEqual(imagefx.readout((130, 93.2), 1024, 576, {}), "x 130,00 · y 93,20")
 
 
+class AxisGuideTests(unittest.TestCase):
+    @staticmethod
+    def spec():
+        from eyepin.geometry import MATTRAI
+        return MATTRAI
+
+    def find(self, segs, x0):
+        hits = [s for s in segs[1:] if abs(s[0][0] - x0) < 1e-6]
+        self.assertEqual(len(hits), 1, segs)
+        return hits[0]
+
+    def test_axis_guides_ticks_at_guideline_ratios(self):
+        pts = {14: (100.0, 100.0), 18: (160.0, 100.0), 16: (130.0, 90.0), 20: (130.0, 110.0)}
+        segs = imagefx.axis_guides(self.spec(), pts)
+        self.assertEqual(len(segs), 7)                           # trục + 3 vạch mí trên (0,21 · 0,48 · 0,76) + 3 vạch mí dưới (0,24 · 0,50 · 0,76)
+        self.assertEqual(segs[0], ((100.0, 100.0), (160.0, 100.0)))
+        up = self.find(segs, 128.8)                              # 0,48 · 60 = 28,8; vạch dài 0,35 · 60 = 21 về phía điểm 16
+        self.assertAlmostEqual(up[1][0], 128.8)
+        self.assertAlmostEqual(up[1][1], 79.0)
+        lo = self.find(segs, 130.0)
+        self.assertAlmostEqual(lo[1][1], 121.0)
+
+    def test_axis_guides_follow_a_slanted_eye(self):
+        pts = {14: (100.0, 100.0), 18: (160.0, 130.0), 16: (128.0, 105.0)}
+        segs = imagefx.axis_guides(self.spec(), pts)
+        ax, ay = 60.0, 30.0
+        for (a, b) in segs[1:]:
+            self.assertLess(abs((b[0] - a[0]) * ax + (b[1] - a[1]) * ay), 1e-6)
+
+    def test_axis_guides_degenerate(self):
+        self.assertIsNone(imagefx.axis_guides(self.spec(), {14: (100.0, 100.0), 18: (100.0, 100.0)}))
+        self.assertIsNone(imagefx.axis_guides(self.spec(), {14: (100.0, 100.0), 16: (130.0, 90.0)}))
+
+
 class MigrateTests(unittest.TestCase):
     def test_migrate_drops_old_scale(self):
         d = {"brightness": 30, "contrast": 1.2, "saturation": 1.0, "size": 1.5}

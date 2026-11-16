@@ -299,6 +299,7 @@ ROTATE_HIT = 14                # bán kính bấm trúng tay cầm xoay (px)
 RESIZE_HIT = 12                # bán kính bấm trúng tay cầm đổi kích thước (px)
 RESIZE_R = 6                   # bán kính tay cầm đổi kích thước khi vẽ (px), viền trắng 2 px ngoài viền tối
 ROTATE_R = 9                   # bán kính tay cầm xoay khi vẽ (px)
+GUIDE_COLOR = (255, 255, 0)    # BGR xanh lơ: thước theo trục mắt, khác màu mắt trái/phải
 
 
 def resize_handles(view: View, box) -> dict[str, tuple[int, int]]:
@@ -338,6 +339,9 @@ def draw_overlay(p, session: Session, f: int, view: View, *, clicks=None, overri
                 for label in group:
                     _draw_eye(p, view, pts, label, pinned=pinned, ids=show_ids, scale=1.0, flags=flags, est=est, look=look,
                               index=(ids or {}).get(label, list(EYES).index(label) + 1) - 1, source=source, tagged=True)
+        if look.axis_guide and selected in EYES:                     # thước theo trục mắt đang chọn; dùng điểm sau `override` nên đi theo khi kéo
+            for a, b in imagefx.axis_guides(EYES[selected], pts) or []:
+                p.line(view.to_screen(a), view.to_screen(b), GUIDE_COLOR, 1)
     if handle and not hide_labels:                        # mắt đang chọn: khung góc nét đứt, tên, tay cầm xoay (như CVAT)
         if len(handle) >= 3 and handle[2]:
             bx0, by0 = view.to_screen((handle[2][0], handle[2][1]))

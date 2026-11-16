@@ -96,6 +96,38 @@ def draw_grid(img: np.ndarray, view, img_w: int, img_h: int, size: int, color: s
     return step
 
 
+GUIDE_TICK = 0.35                      # độ dài vạch thước theo bề rộng mắt
+
+
+def axis_guides(spec, pts: dict, tick: float = GUIDE_TICK):
+    """Thước theo trục mắt (toạ độ ảnh): đoạn đầu là trục khoé–khoé, rồi một vạch vuông góc tại mỗi tỉ lệ guideline v1.3 mục 3.3 của mắt
+    `spec` (EyeSpec: `up_mid`, `lo_mid`, `derived`); vạch mí trên về phía điểm giữa mí trên (thiếu điểm đó thì về phía trên ảnh), vạch mí
+    dưới về phía ngược lại. None khi thiếu một khoé hoặc hai khoé trùng nhau."""
+    a, b = pts.get(spec.first), pts.get(spec.last)
+    if a is None or b is None:
+        return None
+    ax, ay = b[0] - a[0], b[1] - a[1]
+    length = float(np.hypot(ax, ay))
+    if length < 1e-6:
+        return None
+    nx, ny = -ay / length, ax / length
+    side = 0.0
+    up = pts.get(spec.up)
+    if up is not None:
+        side = float(np.sign((up[0] - a[0]) * nx + (up[1] - a[1]) * ny))
+    if side == 0:                                                    # thiếu điểm hoặc mắt nhắm (điểm nằm trên trục): phía trên ảnh
+        side = -1.0 if ny > 0 else 1.0
+    ux, uy = nx * side * tick * length, ny * side * tick * length
+    upper = sorted({spec.up_mid} | {t for s, t in spec.derived.values() if s == "up"})
+    lower = sorted({spec.lo_mid} | {t for s, t in spec.derived.values() if s == "lo"})
+    segs = [((float(a[0]), float(a[1])), (float(b[0]), float(b[1])))]
+    for ratios, sgn in ((upper, 1.0), (lower, -1.0)):
+        for t in ratios:
+            base = (a[0] + t * ax, a[1] + t * ay)
+            segs.append(((float(base[0]), float(base[1])), (float(base[0] + sgn * ux), float(base[1] + sgn * uy))))
+    return segs
+
+
 def _num(v: float, digits: int) -> str:
     return f"{v:.{digits}f}".replace(".", ",")
 

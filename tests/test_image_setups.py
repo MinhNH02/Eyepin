@@ -98,6 +98,18 @@ class ImageSetupsTests(unittest.TestCase):
         app.on_hover(Ev(10, 10))
         self.assertNotIn("tới điểm", app.measure_var.get())
 
+    def test_guides_drawn_only_when_on_and_eye_selected(self):
+        from eyepin.render import Look, render_main
+        app = self.pinned_app()
+        size = (480, 320)
+
+        def img(**kw):
+            return render_main(app.s, 0, size, look=Look(axis_guide=kw.pop("guide")), **kw)[0]
+
+        off = img(guide=False, selected="mattrai")
+        self.assertFalse(np.array_equal(off, img(guide=True, selected="mattrai")))
+        self.assertTrue(np.array_equal(img(guide=False, selected=None), img(guide=True, selected=None)))
+
     def test_shortcuts_guide_lists_new_actions(self):
         from eyepin import shortcuts as sc
         self.assertEqual(sc.BY_ID["grid"].keys, ("g",))
