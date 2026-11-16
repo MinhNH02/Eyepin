@@ -1,0 +1,19 @@
+#!/bin/sh
+# Kiểm tra tiêu đề commit theo Conventional Commits (CLAUDE.md, mục "Quy ước git").
+# Dạng đúng: <type>(<phạm vi>): <mô tả>, phạm vi có thể bỏ, thêm "!" nếu phá vỡ tương thích.
+
+msg_file="$1"
+subject=$(head -n 1 "$msg_file")
+
+case "$subject" in
+  Merge\ *|Revert\ *|fixup!\ *|squash!\ *) exit 0 ;;
+esac
+
+pattern='^(feat|fix|docs|refactor|test|perf|style|build|ci|chore|revert)(\([a-z0-9_-]+\))?!?: .+'
+if ! printf '%s\n' "$subject" | grep -Eq "$pattern"; then
+  echo "Tiêu đề commit không đúng Conventional Commits:" >&2
+  echo "  $subject" >&2
+  echo "Dạng đúng: <type>(<phạm vi>): <mô tả>   (xem CLAUDE.md, mục Quy ước git)" >&2
+  exit 1
+fi
+exit 0

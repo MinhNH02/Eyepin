@@ -58,6 +58,7 @@ việc mới phát sinh thì thêm vào đúng nhóm, đừng để file lệch 
   - Thân commit (khi cần): giải thích **vì sao** thay đổi, xuống dòng quanh 72 ký tự, cách tiêu đề một dòng trống.
   - Thay đổi phá vỡ tương thích: thêm `!` sau phạm vi (ví dụ `feat(cvat)!: ...`) và dòng `BREAKING CHANGE: ...` trong thân.
 - **Mỗi commit một mục đích.** Không gộp sửa lỗi với đổi định dạng trong cùng commit.
+- **Bảo vệ `main`:** GitHub không bật được branch protection cho repo riêng tư ở gói miễn phí. Thay bằng hook trong `.githooks/` (chặn commit và push trực tiếp lên `main`, kiểm tra tiêu đề commit). Sau khi clone, bật bằng `git config core.hooksPath .githooks`. Hook chỉ chạy trên máy đã bật và bỏ qua được bằng `--no-verify`, nên quy tắc này là thoả thuận làm việc, không phải khoá phía server.
 - Không commit dữ liệu, ảnh, guideline công ty, `.superpowers/`, `.archify/` hay cache (đã chặn trong `.gitignore`); không dùng `git add -f` để lách.
 
 ## Những điều về CVAT phải nắm (đã kiểm trên bản 2.75)

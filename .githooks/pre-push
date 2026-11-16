@@ -1,0 +1,11 @@
+#!/bin/sh
+# Không push trực tiếp lên main: thay đổi vào main phải qua PR từ develop (CLAUDE.md, mục "Quy ước git").
+# Git truyền vào mỗi dòng: <ref local> <sha local> <ref remote> <sha remote>.
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    echo "Không push trực tiếp lên main. Mở pull request từ develop vào main." >&2
+    exit 1
+  fi
+done
+exit 0
