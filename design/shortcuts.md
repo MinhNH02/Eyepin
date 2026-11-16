@@ -98,6 +98,8 @@ Phím mặc định theo CVAT 2.75 khi có hành động tương ứng. Đổi p
 | Điểm to hơn | ] | — | CVAT chỉnh trong Settings |
 | Điểm nhỏ hơn | [ | — |  |
 | Đổi mắt nằm trên | Shift+T | + / - | CVAT: đưa đối tượng lên/xuống lớp |
+| Mở Image setups (lưới, độ sáng, tương phản, bão hoà, gamma) | Ctrl+G | — | CVAT: nút ^ giữa mép dưới khung ảnh |
+| Bật/tắt lưới ảnh | g | — | CVAT: ô Image grid trong Image setups |
 
 ## Phím CVAT mà EyePin không có (không áp dụng cho skeleton mắt)
 
