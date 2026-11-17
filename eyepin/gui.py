@@ -144,6 +144,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         self.settings = sc.load_settings()
         self.bind_map = sc.bindings(self.settings)
         self._bound: list[str] = []
+        self._bound_ids: list[tuple[str, str]] = []   # (sequence, tên lệnh Tcl) của mọi phím đã gắn: gỡ phải xoá cả lệnh, không thì lệnh giữ App sống
         self.clipboard: dict | None = None
         self._dialogs: dict[str, tk.Toplevel] = {}
         root.title("EyePin — gán nhãn mắt cho CVAT")
@@ -505,9 +506,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
     def _bind_keys(self):
         """Gắn phím theo `self.bind_map` (gọi lại sau khi người dùng gán lại phím). `handlers` tra theo id hành động."""
         r = self.root
-        for seq in self._bound:
-            r.unbind(seq)
-        self._bound = []
+        self._unbind_keys()
         self.handlers = {}
         self._letter_keys = {}                                    # phím chữ cái (dạng đã chuẩn hoá, không phụ thuộc Caps Lock) -> handler
         funcs = self._actions()
@@ -523,17 +522,33 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
             for seq in self.bind_map[aid]:
                 variant = sc.caps_variant(seq)
                 if variant is None:
-                    r.bind(seq, handler)
+                    self._bound_ids.append((seq, r.bind(seq, handler)))
                     self._bound.append(seq)
                     continue
                 # Caps Lock đổi hoa/thường của keysym: gắn cả hai dạng vào một bộ phân phối nhìn bit Lock vs Shift (B14)
                 self._letter_keys[seq] = handler
                 for tk_seq in (seq, variant):
                     if tk_seq not in self._bound:
-                        r.bind(tk_seq, self._key_dispatch)
+                        self._bound_ids.append((tk_seq, r.bind(tk_seq, self._key_dispatch)))
                         self._bound.append(tk_seq)
         if hasattr(self, "tree"):
             self.tree.set_keys(self._card_keys())                 # chữ khi trỏ vào nút trên thẻ ghi phím hiện hành
+
+    def _unbind_keys(self):
+        """Gỡ mọi phím App đã gắn trên `root` VÀ xoá lệnh Tcl của chúng (`unbind(seq)` chỉ xoá script; lệnh còn lại giữ `self`, nên gán lại phím ở F2
+        hay Đăng xuất đều rò App cũ cùng ảnh nó giữ)."""
+        r = self.root
+        for seq in self._bound:
+            try:
+                r.unbind(seq)                                     # phím chỉ App gắn vào thẻ "." nên gỡ cả sequence là đúng
+            except tk.TclError:
+                pass
+        for _, funcid in self._bound_ids:
+            try:
+                r.deletecommand(funcid)
+            except (tk.TclError, ValueError):
+                pass
+        self._bound, self._bound_ids = [], []
 
     def _key_dispatch(self, e):
         """Phím chữ cái trên cửa sổ chính: tính phím người dùng thật sự bấm (Caps Lock không phải Shift, `shortcuts.event_to_seq`) rồi chạy
@@ -652,17 +667,19 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
             self.save_work(auto=True)
         self._schedule_autosave()
 
-    def confirm_close(self) -> bool:
-        """Hỏi trước khi thoát khi còn thay đổi chưa lưu. True = được đóng cửa sổ, False = ở lại."""
+    def confirm_close(self, logout: bool = False) -> bool:
+        """Hỏi trước khi thoát (hoặc Đăng xuất, `logout=True`: cùng câu hỏi, chữ nói "đăng xuất") khi còn thay đổi chưa lưu.
+        True = được rời phiên, False = ở lại."""
         if not (self.s and self.s.dirty):
             return True
+        title, verb = ("Đăng xuất", "đăng xuất") if logout else ("Thoát EyePin", "thoát")
         if self.scratch:                                     # mở bằng --pins: không có file phiên để lưu
             return bool(messagebox.askyesno(
-                "Thoát EyePin", "Có thay đổi chưa lưu. Đang mở bằng --pins nên tool không ghi file phiên: thoát sẽ mất các thay đổi này "
-                "(xuất file import bằng Ctrl+Shift+S nếu cần giữ).\n\nVẫn thoát?",
+                title, f"Có thay đổi chưa lưu. Đang mở bằng --pins nên tool không ghi file phiên: {verb} sẽ mất các thay đổi này "
+                f"(xuất file import bằng Ctrl+Shift+S nếu cần giữ).\n\nVẫn {verb}?",
                 icon="warning", default="no", parent=self.root))
         ans = messagebox.askyesnocancel(
-            "Thoát EyePin", "Có thay đổi chưa lưu.\n\nCó: lưu rồi thoát\nKhông: thoát, bỏ thay đổi\nHuỷ: ở lại làm tiếp",
+            title, f"Có thay đổi chưa lưu.\n\nCó: lưu rồi {verb}\nKhông: {verb}, bỏ thay đổi\nHuỷ: ở lại làm tiếp",
             icon="warning", default="yes", parent=self.root)
         if ans is None:
             return False
@@ -673,13 +690,16 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
                 return False
         return True
 
-    def confirm_close_busy(self) -> bool:
-        """Đang có việc nền (gửi, khôi phục, mở job...): hỏi trước khi đóng, mặc định Không. True = vẫn đóng."""
+    def confirm_close_busy(self, logout: bool = False) -> bool:
+        """Đang có việc nền (gửi, khôi phục, mở job...): hỏi trước khi đóng (hoặc Đăng xuất, `logout=True`), mặc định Không. True = vẫn làm."""
         if not self.busy:
             return True
-        return bool(messagebox.askyesno(
-            "Thoát EyePin", f"{self.busy} Đóng cửa sổ có thể làm mất kết quả gửi (không biết CVAT đã nhận nhãn hay chưa).\n\nVẫn đóng?",
-            icon="warning", default="no", parent=self.root))
+        if logout:
+            title, text = "Đăng xuất", (f"{self.busy} Đăng xuất bây giờ có thể làm mất kết quả gửi (không biết CVAT đã nhận nhãn hay chưa)."
+                                        "\n\nVẫn đăng xuất?")
+        else:
+            title, text = "Thoát EyePin", f"{self.busy} Đóng cửa sổ có thể làm mất kết quả gửi (không biết CVAT đã nhận nhãn hay chưa).\n\nVẫn đóng?"
+        return bool(messagebox.askyesno(title, text, icon="warning", default="no", parent=self.root))
 
     def on_close(self):
         if not self.confirm_close_busy():
@@ -706,10 +726,28 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
 
     def back_to_login(self):
         """Sau Đăng xuất (đã dọn xong): lưu cài đặt, gỡ cửa sổ gán nhãn khỏi `root` rồi dựng lại màn đăng nhập trên chính cửa sổ đó.
-        Không tự mở lại job nào (kể cả `--job`): người dùng phải đăng nhập lại. Chỉ đóng cửa sổ mới thoát tiến trình."""
+        Không tự mở lại job nào (kể cả `--job`): người dùng phải đăng nhập lại. Chỉ đóng cửa sổ mới thoát tiến trình. Gọi lần hai không làm gì.
+        Dựng màn đăng nhập lỗi thì báo lỗi (hộp và dòng chữ trong cửa sổ) thay vì để cửa sổ trống."""
+        if self._torn:
+            return
         self._save_display_settings()
         self.teardown()
-        self.to_login(self.root)
+        try:
+            self.to_login(self.root)
+        except Exception as err:                                  # mọi lỗi: người dùng phải thấy, không thì chỉ còn cửa sổ trống
+            text = (f"Đã đăng xuất nhưng không dựng lại được màn đăng nhập: {err}\n\n"
+                    "Đóng cửa sổ này rồi mở lại EyePin để đăng nhập.")
+            for w in self.root.winfo_children():
+                try:
+                    w.destroy()
+                except tk.TclError:
+                    pass
+            try:
+                tk.Label(self.root, text=text, wraplength=520, justify="left", bg=theme.PAPER, fg=theme.INK,
+                         padx=24, pady=24).pack(fill="both", expand=True)
+            except tk.TclError:
+                pass
+            self.show_error(text)
 
     def teardown(self):
         """Gỡ `App` khỏi `root` mà KHÔNG huỷ `root`: dừng phát, huỷ mọi hẹn giờ, gỡ phím và bind của App trên `root`/"all", tắt toàn màn hình,
@@ -721,12 +759,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         self.playing = False
         self._cancel_play_job()
         self._cancel_all_after()
-        for seq in self._bound:
-            try:
-                root.unbind(seq)                                  # phím chỉ App gắn vào thẻ "." nên gỡ cả sequence là đúng
-            except tk.TclError:
-                pass
-        self._bound = []
+        self._unbind_keys()
         _unbind_one(root, ".", "<Destroy>", getattr(self, "_destroy_bind", None))   # không dùng unbind(seq, funcid): Python 3.12 gỡ hết mọi bind của seq
         _unbind_one(root, "all", "<ButtonPress>", getattr(self, "_click_bind", None))
         try:
@@ -744,7 +777,13 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
                 w.destroy()
             except tk.TclError:
                 pass
+        old = root.protocol("WM_DELETE_WINDOW")                  # lệnh `on_close` cũ giữ `self`: xoá trước khi đặt lệnh mới
         root.protocol("WM_DELETE_WINDOW", root.destroy)
+        if old:
+            try:
+                root.deletecommand(str(old))
+            except (tk.TclError, ValueError):
+                pass
         if self.cvat_client is not None:
             self.cvat_client.close()
             self.cvat_client = None
@@ -2641,6 +2680,8 @@ def run(frames_dir: str | None, xml: str | None, selftest: bool = False, pins: s
         root.mainloop()
         return 0
     app = App(root)                                      # phiên thư mục ảnh: Đăng xuất cũng về màn đăng nhập (`App.to_login` mặc định = FrontDoor(root))
+    if cvat:
+        app.to_login = lambda r: FrontDoor(r, url=cvat)  # giữ địa chỉ --cvat cho màn đăng nhập sau Đăng xuất (không truyền --job)
     if cvat:                                             # --cvat [--job] kèm --selftest: hộp đăng nhập cũ (hỏi mật khẩu trong cửa sổ); có --job thì tự mở job đó sau khi đăng nhập
         app.open_cvat(url=cvat, job=job)
     elif frames_dir:

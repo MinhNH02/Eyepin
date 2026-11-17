@@ -466,6 +466,91 @@ class TestLogoutToLogin(G.CvatGuiCase):
         self.assertIsNotNone(d.app._autosave_job)
         self.assertIsNotNone(d.app.cvat_client)
 
+    def test_old_app_is_freed_after_logout(self):
+        """Vòng sửa 1 (I1): lệnh Tcl của phím, nút X... giữ `self` của App cũ; phải được xoá để App cũ (và ảnh frame nó giữ) được giải phóng."""
+        import weakref
+        from eyepin.gui import App
+        refs, counts = [], []
+        for _ in range(3):
+            app = App(self.root)
+            app.ask_logout = lambda: True
+            app.logout()
+            refs.append(weakref.ref(app))
+            del app
+            for w in self.root.winfo_children():                            # màn đăng nhập vừa dựng
+                w.destroy()
+            gc.collect()
+            counts.append(len(self.root._tclCommands or ()))
+        self.assertEqual([r() for r in refs], [None, None, None])
+        self.assertLessEqual(counts[2] - counts[0], 2, counts)               # không tăng theo vòng (dung sai nhỏ cố định)
+
+    def test_rebinding_keys_does_not_leak_commands(self):
+        from eyepin.gui import App
+        app = App(self.root)
+        self.addCleanup(app.teardown)
+        app._bind_keys()
+        before = len(self.root._tclCommands or ())
+        for _ in range(3):
+            app._bind_keys()                                                # như gán lại phím ở F2
+        self.assertEqual(len(self.root._tclCommands or ()), before)
+
+    def test_back_to_login_twice_builds_one_login_screen(self):
+        from eyepin.gui import App
+        app = App(self.root)
+        made = []
+        app.to_login = lambda r: made.append(r)
+        app.back_to_login()
+        app.back_to_login()
+        self.assertEqual(len(made), 1)
+
+    def test_a_login_screen_that_cannot_be_built_is_reported(self):
+        from eyepin.gui import App
+        app = App(self.root)
+        errors = []
+        app.show_error = lambda text: errors.append(text)
+
+        def boom(r):
+            raise RuntimeError("hỏng")
+        app.to_login = boom
+        app.back_to_login()
+        self.assertTrue(errors and "màn đăng nhập" in errors[0] and "hỏng" in errors[0], errors)
+        self.assertTrue(self.root.winfo_children())                         # cửa sổ không trống: có dòng báo lỗi
+        self.assertIn("hỏng", " ".join(G.texts(self.root)))
+
+    def test_logout_questions_talk_about_logging_out_not_exiting(self):
+        from types import SimpleNamespace
+        from eyepin.gui import App
+        app = App(self.root)
+        self.addCleanup(app.teardown)
+        texts = []
+        app.busy = "Đang gửi lên CVAT…"
+        app.s = SimpleNamespace(cvat=None, unsent=False, dirty=True, layers=[])
+        with mock.patch("eyepin.gui.messagebox.askyesno", side_effect=lambda t, m, **kw: texts.append(t + " " + m) or True), \
+                mock.patch("eyepin.gui.messagebox.askyesnocancel", side_effect=lambda t, m, **kw: texts.append(t + " " + m) or None):
+            app.logout()                                                    # bận → hỏi; còn thay đổi chưa lưu → hỏi (Huỷ)
+        app.busy, app.s = None, None
+        self.assertEqual(len(texts), 2, texts)
+        for t in texts:
+            self.assertIn("Đăng xuất", t)
+            self.assertNotIn("thoát", t.lower())
+            self.assertNotIn("Vẫn đóng", t)
+
+    def test_folder_session_opened_with_cvat_keeps_the_address_after_logout(self):
+        import tkinter as tk
+        from eyepin import gui
+        seen = []
+        with mock.patch.object(gui.App, "load", lambda self, *a, **k: seen.append(self)), \
+                mock.patch.object(gui.App, "open_cvat", lambda self, *a, **k: seen.append(self)), \
+                mock.patch.object(tk.Misc, "mainloop", lambda self, n=0: None):
+            self.assertEqual(gui.run("thu_muc_gia", None, cvat="http://localhost:9090"), 0)
+        app = seen[0]
+        try:
+            with mock.patch.object(gui, "FrontDoor") as door:
+                app.to_login(app.root)
+            self.assertEqual(door.call_args.kwargs.get("url"), "http://localhost:9090")
+        finally:
+            app.root.destroy()
+
     def test_closing_the_window_after_logout_exits(self):
         import tkinter as tk
         from eyepin.gui import App
@@ -529,7 +614,7 @@ class TestLogout(G.CvatGuiCase):
     @win_only
     def test_cancelling_at_the_unsaved_changes_question_keeps_everything(self):
         self.remember()
-        self.app.confirm_close = lambda: False
+        self.app.confirm_close = lambda **kw: False
         self.app.logout()
         self.assertTrue(cvatlogin.login_path().exists())
         self.assertEqual(self.app.settings["cvat"]["user"], "minh")

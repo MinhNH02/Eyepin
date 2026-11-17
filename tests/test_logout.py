@@ -271,7 +271,7 @@ class TestLogoutFlow(LogoutCase):
 
     def test_a_cvat_job_never_gets_the_save_and_exit_question(self):
         app = self.logout_app()
-        app.confirm_close = lambda: self.asked.append(("close",)) or True
+        app.confirm_close = lambda **kw: self.asked.append(("close",)) or True
         app.logout()
         self.assertNotIn(("close",), self.asked)                           # bản lưu sắp bị xoá nên hỏi "lưu rồi thoát" là vô nghĩa
 
@@ -280,7 +280,7 @@ class TestLogoutFlow(LogoutCase):
         sent = self.other_session("sent.json", 6, unsent=False)
         from types import SimpleNamespace
         app.s = SimpleNamespace(cvat=None, unsent=False, dirty=True, layers=[])
-        app.confirm_close = lambda: self.asked.append(("close",)) or False
+        app.confirm_close = lambda **kw: self.asked.append(("close",)) or False
         app.logout()
         self.assertEqual(self.asked, [("close",)])
         self.assertTrue(sent.exists())
@@ -329,6 +329,42 @@ class TestLogoutFlow(LogoutCase):
         self.assertEqual(self.session_files(), [])                         # xoá cả file phiên vừa lưu sau khi gửi
         self.assertEqual([a[0] for a in self.asked], ["open"])             # đã hỏi rồi thì không hỏi xác nhận chung nữa
         self.assertNotIn("/api/auth/logout", [path for _, path in self.requests()])
+
+    def test_send_then_logout_with_the_real_teardown_inside_the_background_poll(self):
+        """`_logout_after_send` chạy trong `poll` của `_run_bg`: teardown thật huỷ cửa sổ ngay trong đó, không được để lỗi hay hẹn giờ mồ côi."""
+        app = self.logout_app(draw=True)
+        del app.back_to_login                                              # dùng back_to_login thật
+        made = []
+        app.to_login = lambda r: made.append(r)                            # không dựng màn đăng nhập thật trên cửa sổ dùng chung
+        app.save_work()
+        self.answers["open"] = "send"
+        errors = []
+        self.root.report_callback_exception = lambda *a: errors.append(a)
+        try:
+            app.logout()
+            end = time.monotonic() + 30
+            gc.disable()
+            try:
+                while not made and time.monotonic() < end:
+                    self.root.update()
+                    time.sleep(0.01)
+                for _ in range(10):
+                    self.root.update()
+                    time.sleep(0.01)
+            finally:
+                gc.enable()
+        finally:
+            del self.root.report_callback_exception
+        self.assertEqual(errors, [])
+        self.assertEqual(self.srv.import_formats, ["CVAT 1.1"])
+        self.assertEqual(len(made), 1)
+        self.assertIsNone(app.s)
+        self.assertIsNone(app.cvat_client)
+        self.assertEqual(self.root.winfo_children(), [])
+        self.assertEqual(self.root.tk.splitlist(self.root.tk.call("after", "info")), ())
+        self.assertEqual(self.session_files(), [])
+        for seq in self.root.bind():
+            self.root.unbind(seq)
 
     def test_a_failed_send_stops_the_logout_and_keeps_everything(self):
         app = self.logout_app(draw=True)

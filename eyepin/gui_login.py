@@ -328,11 +328,11 @@ class LoginMixin:
         Gửi rồi đăng xuất / Đăng xuất và bỏ công này / Huỷ; job khác còn phiên chưa gửi: liệt kê, Xoá luôn / Huỷ). Gửi lỗi hoặc huỷ thì dừng, không xoá gì.
         Xoá lỗi file nào thì báo tên file và ở lại job. Không bao giờ gọi POST /api/auth/logout."""
         self._after_send = None
-        if not self.confirm_close_busy():
+        if not self.confirm_close_busy(logout=True):
             return
         s = self.s
         cvat_open = s is not None and s.cvat is not None
-        if not cvat_open and not self.confirm_close():           # phiên thư mục ảnh: hỏi lưu như khi đóng cửa sổ; job CVAT thì bản lưu sắp bị xoá nên khỏi hỏi
+        if not cvat_open and not self.confirm_close(logout=True):           # phiên thư mục ảnh: hỏi lưu như khi đóng cửa sổ; job CVAT thì bản lưu sắp bị xoá nên khỏi hỏi
             return
         if cvat_open and s.unsent:
             choice = self.ask_logout_open_job(s.cvat.get("job"), sum(len(L.pins) for L in s.layers))
