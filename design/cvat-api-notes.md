@@ -31,3 +31,16 @@ Kết quả của Task 0 trong `design/2026-11-16-cvat-direct-plan.md`. Thử tr
 - **Định dạng để hiện nhãn mắt ở chế độ QC:** có track mắt → "CVAT for video" (giữ keyframe); chỉ có shape mắt → "CVAT for images".
 - `CvatClient` cần thêm `annotations(job_id) -> dict` (JSON) và `import_xml` không gửi `filename`.
 - Lệnh `DELETE /api/jobs/{id}/annotations` (204) xoá sạch nhãn của job, dùng để dọn sau khi thử.
+
+## Quy ước pixel (kiểm 2026-11-16 trên CVAT 2.75 local, job 9 lúc trống)
+
+- Cách kiểm: import một skeleton `mattrai` thử vào job 9 (trống) bằng `import_job_annotations`, điểm 14/16/18/20 ở toạ độ nguyên
+  (300, 250), (310, 246)…, điểm 15/17/19/21 ở toạ độ ,5 (305,5; 247,5)…; mở job trong Chrome, đo bằng JavaScript vị trí trên màn hình của
+  từng điểm so với `#cvat_canvas_background`; xong thì `delete_job_data(9)` (job về 0 shape, 0 track, 0 tag).
+- Kết quả: canvas nền đúng bằng cỡ ảnh (1024×576), ảnh vẽ từ góc (0, 0). Điểm toạ độ (300, 250) nằm đúng mép trên-trái pixel (300, 250)
+  (đo được 300,0; 250,0); điểm (305,5; 247,5) nằm giữa pixel. **Với CVAT, pixel i phủ [i, i+1)**; tâm pixel i ở i + 0,5.
+- EyePin trước ngày này vẽ ảnh bằng `warpAffine` không bù nửa pixel: tâm pixel i ở toạ độ i. Điểm đặt bằng mắt trong EyePin vì vậy hiện
+  trên CVAT lệch (−0,5; −0,5) px. Sửa trong `render.warp_image` (kế hoạch `design/2026-11-16-grid-color-plan.md`, Task 3).
+- Gamma của CVAT là bộ lọc Gamma của fabric 5.x (`cvat-ui` khai báo `fabric ^5.2.1`): bảng tra `Math.pow(i/255, 1/gamma) * 255` cho
+  từng kênh (đọc trong `src/filters/gamma_filter.class.js` của `fabric@5.2.1`), áp vào ảnh trước bộ lọc CSS
+  `brightness() contrast() saturate()`.

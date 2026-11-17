@@ -27,6 +27,8 @@ EyePin giúp gán nhãn hai mắt `mattrai` (điểm 14–21) và `matphai` (22�
 
 **Đóng tool:** nếu còn thay đổi chưa lưu (tiêu đề cửa sổ có dấu `*`), tool hiện hộp hỏi: **Có** = lưu rồi thoát, **Không** = thoát và bỏ thay đổi, **Huỷ** = ở lại làm tiếp.
 
+**Lưới và màu ảnh (như hộp Image setups của CVAT):** bấm nút `^` giữa mép dưới khung ảnh hoặc `Ctrl+G`. Image grid: bật lưới (phím `g`), Size tính bằng pixel ảnh (1 là lưới từng pixel; khi thu nhỏ lưới tự thưa ra, dòng trạng thái ghi bước đang vẽ), màu, Opacity. Color settings: Brightness, Contrast, Saturation (%, 100 là gốc), Gamma (lớn hơn 1 làm sáng vùng tối); "Reset color settings" chỉ đặt lại màu, không tắt lưới. Chỉ để nhìn, không đổi ảnh hay nhãn.
+
 **Chuột quá nhạy?** Mở `F2` > tab Workspace > "Độ nhạy chuột khi kéo". Đặt dưới 1 (ví dụ 0,5) để điểm, mắt và ảnh đi chậm lại khi kéo; 1 là như cũ. Cuộn chuột để zoom thì chỉnh ở "Hệ số zoom mỗi nấc" cùng tab.
 
 ## 3. Phát hiện quay đầu và báo độ chính xác (mới 16/11)

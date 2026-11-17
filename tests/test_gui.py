@@ -409,16 +409,29 @@ class GuiTests(unittest.TestCase):
         from eyepin.render import Look
         app, seq = self.make_app()
         a = np.full((4, 4, 3), 100, np.uint8)
-        self.assertGreater(int(Look(brightness=50).adjust(a).mean()), 100)
-        self.assertEqual(int(Look(contrast=2.0).adjust(a).mean()), 72)
+        self.assertGreater(int(Look(brightness=150).adjust(a).mean()), 100)        # thang của CVAT: 100 là gốc
+        self.assertEqual(int(Look(contrast=200.0).adjust(a).mean()), 72)
         c = np.zeros((2, 2, 3), np.uint8); c[..., 2] = 200
         self.assertEqual(int(Look(saturation=0).adjust(c)[0, 0].std()), 0)
+        self.assertIs(Look().adjust(a), a)                                          # mặc định: không chép ảnh
         self.assertEqual(Look(top="mattrai").order(), ["matphai", "mattrai"])
         app.handlers["swap_top"](None)
         self.assertEqual(app.look.top, "mattrai")
-        app.set_look(brightness=40.0)
+        app.set_look(brightness=140.0, gamma=2.0)
         app.reset_adjust()
-        self.assertEqual(app.look.brightness, 0.0)
+        self.assertEqual(app.look.brightness, 100.0)
+        self.assertEqual(app.look.gamma, 1.0)
+
+    def test_old_display_scale_is_reset(self):
+        """settings.json cũ lưu độ sáng theo thang cộng (−100..100): không được hiểu thành 30% (ảnh tối đen)."""
+        app, seq = self.make_app()
+        app.settings["workspace"]["remember_display"] = True
+        app.settings["display"] = {"brightness": 30}
+        app._apply_settings_to_look()
+        self.assertEqual(app.look.brightness, 100.0)
+        app.refresh()
+        self.assertIn("thang của CVAT", app.status.get())
+        self.assertNotIn("brightness", app.settings["display"])
 
     def test_filter_search_and_objects_panel(self):
         app, seq = self.make_app()

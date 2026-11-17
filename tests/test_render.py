@@ -7,6 +7,34 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from eyepin.render import View, marker_radii  # noqa: E402
 
 
+class PixelConventionTests(unittest.TestCase):
+    """Như CVAT (design/cvat-api-notes.md, "Quy ước pixel"): pixel ảnh i phủ toạ độ [i, i+1), tâm ở i + 0,5."""
+
+    @staticmethod
+    def one_white_pixel():
+        import numpy as np
+        src = np.zeros((40, 40, 3), np.uint8)
+        src[10, 10] = 255
+        return src
+
+    def test_image_pixel_covers_i_to_i_plus_1(self):
+        import numpy as np
+        from eyepin.render import warp_image
+        v = View(0, 0, 8, 40, 40)
+        dst = warp_image(self.one_white_pixel(), v, (320, 320), smooth=False, bg=(0, 0, 0))
+        cols = np.where(dst[84, :, 0] > 0)[0].tolist()
+        rows = np.where(dst[:, 84, 0] > 0)[0].tolist()
+        self.assertEqual(cols, list(range(80, 88)))
+        self.assertEqual(rows, list(range(80, 88)))
+        self.assertEqual(v.to_frame(80, 80), (10.0, 10.0))
+
+    def test_smoothed_pixel_peak_is_centered(self):
+        import numpy as np
+        from eyepin.render import warp_image
+        dst = warp_image(self.one_white_pixel(), View(0, 0, 8, 40, 40), (320, 320), smooth=True, bg=(0, 0, 0))
+        self.assertIn(int(np.argmax(dst[84, :, 0])), (83, 84))
+
+
 class PreviewMarkerTests(unittest.TestCase):
     def test_preview_pins_are_sized_by_the_eye_width(self):
         """Mắt đang vẽ dở: điểm ghim to theo bề rộng mắt trên màn hình (dễ nắm để kéo), như điểm của nhãn thật."""

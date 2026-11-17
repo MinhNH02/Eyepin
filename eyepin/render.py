@@ -11,6 +11,7 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from . import imagefx
 from .geometry import EYES, Point
 from .session import Session
 
@@ -32,9 +33,15 @@ class Look:
     ids: bool = True
     size: float = 1.0            # hệ số cỡ điểm và chữ số
     opacity: float = 1.0         # độ đặc của toàn bộ nhãn (1 = đặc)
-    brightness: float = 0.0      # -100..100, cộng vào mọi pixel (như Brightness của CVAT)
-    contrast: float = 1.0        # 0.3..3, nhân quanh mức xám giữa
-    saturation: float = 1.0      # 0 = đen trắng, 1 = gốc
+    brightness: float = 100.0    # % như Brightness của CVAT (50..200, nhân vào ảnh); xem imagefx.COLOR_RANGES
+    contrast: float = 100.0      # % (50..200), quanh mức xám giữa
+    saturation: float = 100.0    # % (0..300), 0 = đen trắng
+    gamma: float = 1.0           # 0,2..2,6 như Gamma của CVAT (bảng tra pow(v, 1/gamma)), áp trước độ sáng
+    grid: bool = False           # lưới ảnh (Image grid của CVAT); vẽ vào ảnh nền nên xoay theo ảnh
+    grid_size: int = 100         # pixel ảnh, 1..1000 (CVAT 5..1000); tự thưa khi thu nhỏ (imagefx.grid_step)
+    grid_color: str = "White"    # một khoá của imagefx.GRID_COLORS
+    grid_opacity: float = 100.0  # %, 0..100
+    axis_guide: bool = False     # thước theo trục mắt đang chọn (vạch tỉ lệ guideline v1.3 mục 3.3)
     smooth: bool = True          # làm mịn ảnh khi phóng to (tắt thì thấy từng pixel)
     bg: tuple = (40, 40, 40)     # màu nền ngoài ảnh (BGR)
     selected_opacity: float = 1.0   # độ đặc riêng của mắt đang chọn
@@ -52,15 +59,8 @@ class Look:
         return [l for l in EYES if l != self.top] + [self.top]
 
     def adjust(self, img: np.ndarray) -> np.ndarray:
-        """Chỉnh độ sáng, tương phản, bão hoà của ảnh nền (chỉ để nhìn; không đổi ảnh gốc)."""
-        if self.brightness == 0 and self.contrast == 1 and self.saturation == 1:
-            return img
-        out = img.astype(np.float32)
-        if self.saturation != 1:
-            g = out.mean(axis=2, keepdims=True)
-            out = g + (out - g) * self.saturation
-        out = (out - 128) * self.contrast + 128 + self.brightness
-        return np.clip(out, 0, 255).astype(np.uint8)
+        """Chỉnh gamma, độ sáng, tương phản, bão hoà của ảnh nền như CVAT (chỉ để nhìn; không đổi ảnh gốc)."""
+        return imagefx.apply_color(img, self.brightness, self.contrast, self.saturation, self.gamma)
 
     def color_of(self, label: str, index: int = 0) -> tuple:
         """Màu vẽ mắt `label` (index là thứ tự đối tượng, bắt đầu từ 0) theo cách tô màu đang chọn."""
@@ -263,8 +263,21 @@ def render_base(session: Session, f: int, size: tuple[int, int], view: View, loo
     trong lúc kéo điểm, xoay nhãn: những lúc đó chỉ phần nhãn đổi."""
     look = look or Look()
     src = look.adjust(session.bgr(f)) if look.image else np.full_like(session.bgr(f), look.bg)
-    M = np.float32([[view.k, 0, -view.x0 * view.k], [0, view.k, -view.y0 * view.k]])
-    return cv2.warpAffine(src, M, size, flags=cv2.INTER_CUBIC if look.smooth else cv2.INTER_NEAREST, borderValue=look.bg)
+    tiny_grid = look.grid and look.grid_size <= 2                    # lưới từng pixel: hiện pixel rõ để mỗi ô trùng một pixel
+    out = warp_image(src, view, size, look.smooth and not tiny_grid, look.bg)
+    if look.grid:
+        imagefx.draw_grid(out, view, session.width, session.height, look.grid_size, look.grid_color, look.grid_opacity)
+    return out
+
+
+def warp_image(src: np.ndarray, view: View, size: tuple[int, int], smooth: bool, bg: tuple) -> np.ndarray:
+    """Phóng và dời ảnh `src` theo khung nhìn `view` thành ảnh cỡ `size` (màn hình).
+
+    Như CVAT, pixel ảnh i phủ toạ độ [i, i+1) (tâm ở i + 0,5); OpenCV đặt tâm pixel ở toạ độ nguyên, nên bù nửa pixel ở cả hai phía
+    (ảnh và màn hình). Không bù thì điểm đặt bằng mắt trong EyePin hiện trên CVAT lệch (−0,5; −0,5) px (design/cvat-api-notes.md)."""
+    k = view.k
+    M = np.float32([[k, 0, k * (0.5 - view.x0) - 0.5], [0, k, k * (0.5 - view.y0) - 0.5]])
+    return cv2.warpAffine(src, M, size, flags=cv2.INTER_CUBIC if smooth else cv2.INTER_NEAREST, borderValue=bg)
 
 
 def render_main(session: Session, f: int, size: tuple[int, int] = (960, 460), *, anchor: tuple | None = None,
@@ -290,6 +303,7 @@ ROTATE_HIT = 14                # bán kính bấm trúng tay cầm xoay (px)
 RESIZE_HIT = 12                # bán kính bấm trúng tay cầm đổi kích thước (px)
 RESIZE_R = 6                   # bán kính tay cầm đổi kích thước khi vẽ (px), viền trắng 2 px ngoài viền tối
 ROTATE_R = 9                   # bán kính tay cầm xoay khi vẽ (px)
+GUIDE_COLOR = (255, 255, 0)    # BGR xanh lơ: thước theo trục mắt, khác màu mắt trái/phải
 
 
 def resize_handles(view: View, box) -> dict[str, tuple[int, int]]:
@@ -337,6 +351,9 @@ def draw_overlay(p, session: Session, f: int, view: View, *, clicks=None, overri
                     _draw_eye(p, view, pts, label, pinned=pinned, ids=show_ids, scale=1.0, flags=flags, est=est, look=look,
                               index=(ids or {}).get(label, list(EYES).index(label) + 1) - 1, source=source, tagged=True,
                               bold=label == active)
+        if look.axis_guide and selected in EYES:                     # thước theo trục mắt đang chọn; dùng điểm sau `override` nên đi theo khi kéo
+            for a, b in imagefx.axis_guides(EYES[selected], pts) or []:
+                p.line(view.to_screen(a), view.to_screen(b), GUIDE_COLOR, 1)
     if handle and not hide_labels:                        # mắt đang chọn: khung góc nét đứt, tên, tay cầm xoay (như CVAT)
         if len(handle) >= 3 and handle[2]:
             bx0, by0 = view.to_screen((handle[2][0], handle[2][1]))
