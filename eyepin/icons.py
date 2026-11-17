@@ -28,7 +28,7 @@ FALLBACK_TEXT = {
     "pinned": "P", "link": "@", "collapse": "v", "check": "ok", "export": "E",
     "settings": "⚙", "keyboard": "F1", "lock": "L", "unlock": "U", "open": "…",
     "cursor": "V", "hand": "H", "zoom_in": "+", "zoom_out": "-", "fit": "0",
-    "rot_ccw": "<", "rot_cw": ">", "kf_prev": "<★", "kf_next": "★>", "logout": "→]",
+    "rot_ccw": "<", "rot_cw": ">", "kf_prev": "<★", "kf_next": "★>", "logout": "→]", "quit": "✕",
 }
 
 # Tên cũ → (tên PNG, lật ngang?). Tên đã trùng tên PNG thì không cần ghi. `kf_prev`/`kf_next` là PNG ghép (mũi tên + sao, xem

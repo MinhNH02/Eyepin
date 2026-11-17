@@ -281,8 +281,11 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         self.filter_btn = IconButton(top, "filter", popup(flt_menu), kind="bar", size=BAR_SIZE,
                                      tip=lambda: f"Lọc frame (đang: {Session.FILTERS[self.filter]}). {self.kl('search_prev')}/{self.kl('search_next')} nhảy tới frame thoả")
         info_btn = B("info", self.show_info, f"Thông tin job ({self.kl('info')})")
-        self.logout_btn = B("logout", self.logout, "Đăng xuất: xoá đăng nhập đã nhớ và các phiên làm việc CVAT đã lưu trên máy này, rồi về màn đăng nhập (hỏi trước nếu còn công chưa gửi)")
-        for w in (self.logout_btn, self.view_btn, self.filter_btn, self.fullscreen_btn, info_btn, *self._cvat_buttons(top)):    # logout_btn đầu tiên = ngoài cùng bên phải
+        self.logout_btn = B("logout", self.logout, "Đăng xuất: xoá đăng nhập đã nhớ và các phiên làm việc CVAT đã lưu trên máy này, rồi về màn đăng nhập "
+                            "(không thoát EyePin; hỏi trước nếu còn công chưa gửi)")
+        self.quit_btn = B("quit", lambda: self.on_close(),"Thoát EyePin: đóng cửa sổ như nút X (hỏi lưu nếu còn thay đổi); không xoá gì, "
+                          "đăng nhập đã nhớ và phiên đã lưu vẫn giữ")
+        for w in (self.logout_btn, self.quit_btn, self.view_btn, self.filter_btn, self.fullscreen_btn, info_btn, *self._cvat_buttons(top)):    # logout_btn đầu tiên = ngoài cùng bên phải (spec 9b), Thoát ngay bên trái nó
             w.pack(side="right", padx=2)
         # --- thân: thanh công cụ dọc bên trái | ảnh | panel phải ---
         body = ttk.Frame(self.root)

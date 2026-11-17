@@ -75,6 +75,7 @@ ICON_SOURCES = {
     "upload": "ant/outlined_cloud-upload",
     "home": "ant/outlined_home",
     "logout": "ant/outlined_logout",
+    "quit": "ant/outlined_close",          # Thoát EyePin (đóng cửa sổ), tách khỏi Đăng xuất
 }
 
 # Nút của riêng EyePin (CVAT không có trên thanh trên): ghép mũi tên CVAT với huy hiệu nhỏ ở góc dưới, đúng kiểu

@@ -485,6 +485,7 @@ class TestLogoutFlow(LogoutCase):
         self.assertEqual(btn.name, "logout")
         right = [w for w in app._top_bar.pack_slaves() if w.pack_info()["side"] == "right"]
         self.assertIs(right[0], btn)
+        self.assertIs(right[1], app.quit_btn)                              # nút Thoát EyePin riêng, ngay cạnh Đăng xuất
         self.answers["generic"] = False
         btn._click(None)
         self.assertEqual(self.asked, [("generic",)])

@@ -6,7 +6,8 @@
 - `FrontDoor`: nối `LoginScreen` với cửa sổ chính: đăng nhập xong dựng `App` rồi mở `--job` hoặc hộp "Mở từ CVAT…" đã đăng nhập sẵn; "làm việc không
   cần CVAT" dựng `App` trống như trước đây.
 - `LoginMixin` (của `App`): "Đăng xuất…" — xoá khoá đã nhớ, tên đăng nhập và phiên CVAT trên máy này rồi về màn đăng nhập trong cùng cửa sổ
-  (`App.back_to_login` → `App.teardown` → `App.to_login`); không tự mở lại job nào. Chỉ đóng cửa sổ mới thoát EyePin.
+  (`App.back_to_login` → `App.teardown` → `App.to_login`); không tự mở lại job nào. Chỉ đóng cửa sổ (nút X, hoặc nút/mục "Thoát EyePin"
+  riêng trên thanh cam, trong menu và trên màn đăng nhập) mới thoát EyePin; Thoát không xoá gì.
 
 Việc mạng chạy trên luồng nền; luồng nền không đụng vào Tk (kết quả đi qua hàng đợi, lấy bằng `root.after`). Mật khẩu bị xoá khỏi ô nhập sau mỗi lần thử.
 Màn này chỉ kiểm tài khoản CVAT: nó không khoá được ảnh hay file trên máy.
@@ -90,6 +91,8 @@ class LoginScreen:
         self.local_btn = ttk.Button(card, text="Làm việc không cần CVAT → mở thư mục ảnh", command=self.go_local)
         self.local_btn.grid(row=9, column=0, columnspan=2, sticky="we", pady=(6, 4))
         ttk.Label(card, text="Không cần tài khoản: chỉ mở ảnh và file nhãn trên máy.", style="Muted.TLabel").grid(row=10, column=0, columnspan=2, sticky="w")
+        self.quit_btn = ttk.Button(card, text="Thoát EyePin", command=self.quit)
+        self.quit_btn.grid(row=11, column=0, columnspan=2, sticky="e", pady=(14, 0))
         self._focus_form()
 
     def _focus_form(self):
@@ -228,6 +231,16 @@ class LoginScreen:
             return
         self.destroy()
         self._on_local()
+
+    def quit(self):
+        """Thoát EyePin từ màn đăng nhập (như nút X): huỷ hẹn giờ còn chờ (kết quả đăng nhập muộn bị bỏ) rồi huỷ cửa sổ. Không xoá gì."""
+        self.destroy()
+        try:
+            for job in self.root.tk.splitlist(self.root.tk.call("after", "info")):
+                self.root.after_cancel(job)
+            self.root.destroy()
+        except tk.TclError:
+            pass
 
     def destroy(self):
         if self._closed:

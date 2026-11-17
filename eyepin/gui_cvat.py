@@ -89,7 +89,8 @@ class CvatMixin:
         menu.add_command(label="Xoá nhãn mắt cũ và gán lại…", command=self.qc_clear)
         self._cvat_menu["clear"] = menu.index("end")
         menu.add_separator()
-        menu.add_command(label="Đăng xuất…", command=self.logout)          # LoginMixin (gui_login.py)
+        menu.add_command(label="Đăng xuất…", command=self.logout)          # LoginMixin (gui_login.py): dọn rồi về màn đăng nhập
+        menu.add_command(label="Thoát EyePin", command=lambda: self.on_close())   # như nút X: hỏi lưu/bận rồi đóng, không xoá gì
 
     def _cvat_buttons(self, top) -> list:
         """Hai nút icon trên thanh cam (cạnh Info, Filters như CVAT), chữ chỉ hiện khi trỏ chuột: Mở job CVAT (HomeOutlined) và Gửi lên CVAT

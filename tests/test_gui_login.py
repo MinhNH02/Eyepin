@@ -717,6 +717,90 @@ class TestLogout(G.CvatGuiCase):
         app.on_close()
         self.assertNotIn("shutdown", calls)
 
+    def test_menu_has_a_separate_quit_entry_that_takes_the_close_path(self):
+        menu = self.app._menu
+        idx = {menu.entrycget(i, "label"): i for i in range(menu.index("end") + 1) if menu.type(i) == "command"}
+        self.assertIn("Thoát EyePin", idx)
+        self.assertNotEqual(idx["Thoát EyePin"], idx["Đăng xuất…"])
+        calls = []
+        self.app.on_close = lambda: calls.append("close")
+        menu.invoke(idx["Thoát EyePin"])
+        self.assertEqual(calls, ["close"])
+        self.assertEqual(self.shut, [])                                  # Thoát không đi đường Đăng xuất
+
+
+class TestQuitVsLogout(G.CvatGuiCase):
+    """Người dùng yêu cầu 2026-11-17: nút Đăng xuất và nút Thoát EyePin tách riêng. Mỗi test dùng một Tk riêng (Thoát huỷ cửa sổ)."""
+
+    def own_root(self):
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+
+        def bye():
+            try:
+                root.destroy()
+            except tk.TclError:
+                pass
+        self.addCleanup(bye)
+        return root
+
+    def own_app(self, root):
+        from eyepin.gui import App
+        app = App(root)
+        app.show_error = lambda text: self.fail(text)
+        return app
+
+    def gone(self, root):
+        import tkinter as tk
+        try:
+            root.winfo_exists()
+        except tk.TclError:
+            return True
+        return False
+
+    @win_only
+    def test_quit_button_closes_the_window_and_wipes_nothing(self):
+        self.assertTrue(cvatlogin.save_login("http://localhost:8080", "minh", "k1", 8))
+        st = sc.load_settings()
+        st["cvat"] = {"url": "http://localhost:8080", "user": "minh"}
+        sc.save_settings(st)
+        root = self.own_root()
+        app = self.own_app(root)
+        app.quit_btn._click(None)                                          # bấm nút Thoát trên thanh cam
+        self.assertTrue(self.gone(root))
+        self.assertTrue(cvatlogin.login_path().exists())                    # Thoát không dọn gì
+        self.assertEqual(sc.load_settings()["cvat"]["user"], "minh")
+
+    def test_logout_button_keeps_the_window(self):
+        root = self.own_root()
+        app = self.own_app(root)
+        app.ask_logout = lambda: True
+        app.logout_btn._click(None)                                        # bấm nút Đăng xuất
+        root.update()
+        self.assertFalse(self.gone(root))
+        self.assertEqual(root.title(), "EyePin — đăng nhập")
+
+    def test_the_two_buttons_sit_side_by_side_with_distinct_tips(self):
+        import inspect
+        from eyepin import gui
+        root = self.own_root()
+        app = self.own_app(root)
+        self.assertEqual((app.quit_btn.name, app.logout_btn.name), ("quit", "logout"))
+        self.assertEqual(app.quit_btn.glyph, "")                           # có icon PNG, không lùi về chữ
+        bar = app.quit_btn.master.pack_slaves()
+        self.assertEqual(abs(bar.index(app.quit_btn) - bar.index(app.logout_btn)), 1)
+        src = inspect.getsource(gui.App._build)
+        self.assertIn("Thoát EyePin: đóng cửa sổ", src)
+        self.assertIn("không thoát EyePin", src)
+
+    def test_login_screen_has_a_quit_button(self):
+        root = self.own_root()
+        s = LoginScreen(root, on_login=lambda c, u: None, on_local=lambda: None, url="http://localhost:8080", settings=sc.load_settings())
+        self.assertIn("Thoát EyePin", G.texts(s.frame))
+        s.quit_btn.invoke()
+        self.assertTrue(self.gone(root))
+
 
 if __name__ == "__main__":
     unittest.main()
