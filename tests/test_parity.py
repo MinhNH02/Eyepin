@@ -116,7 +116,8 @@ class ParityTests(unittest.TestCase):
         app.paste_pins()
         self.assertIn(30, app.s.pins)
         for i in MR.ids:
-            self.assertEqual(app.s.pins[30][i], before_right[i])          # mắt kia giữ nguyên
+            self.assertEqual(app.s.points_at(30)[i], before_right[i])     # mắt kia giữ nguyên
+        self.assertNotIn(30, app.s.eye_keyframes("matphai"))              # và không thành keyframe (B26)
         for i in ML.ids:
             self.assertEqual(app.s.pins[30][i], app.clipboard[i])
 
@@ -512,7 +513,8 @@ class ParityTests(unittest.TestCase):
         for i in sp.ids:
             self.assertAlmostEqual(after[i][1], before[i][1], delta=1e-6)                      # chiều cao không đổi
         for i in other.ids:
-            self.assertEqual(after[i], before[i])                                              # mắt kia không đổi
+            self.assertEqual(app.s.points_at(10)[i], before[i])                                # mắt kia không đổi
+        self.assertNotIn(10, app.s.eye_keyframes("matphai"))                                   # và không thành keyframe (B26)
         self.assertEqual((app.view.x0, app.view.y0, app.view.k), view0)                        # ảnh không dời
         self.assertTrue(app.s.undo())
         self.assertNotIn(10, app.s.pins)

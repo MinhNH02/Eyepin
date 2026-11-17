@@ -41,7 +41,7 @@ class Look:
     color_by: str = "label"      # label | instance | group
     outlined: bool = False       # viền ngoài quanh đường mắt và điểm
     outline_color: tuple = (0, 0, 0)
-    point_colors: bool = True    # mỗi điểm một màu theo vị trí (POINT_PALETTE); tắt thì mọi điểm cùng màu mắt
+    point_colors: bool = True    # mỗi điểm một màu theo vị trí (POINT_PALETTE), chỉ khi color_by="label" và mắt không có màu riêng; tắt thì mọi điểm cùng màu mắt
     text_always: bool = False    # luôn hiện chữ cạnh mắt (không chỉ khi chọn)
     text_content: tuple = ("id", "label", "source")
     font_size: float = 1.0
@@ -179,19 +179,22 @@ def _painter(target):
 
 def _draw_eye(img, view: View, pts: dict[int, Point], label: str, *, pinned: bool, ids: bool, scale: float,
               flags: dict[int, str] | None = None, est: dict[int, float] | None = None, look: Look | None = None,
-              index: int = 0, source: str = "", tagged: bool = False):
-    """`img`: ảnh numpy hoặc bút vẽ. `tagged`: gắn nhãn "pt:<mắt>:<id>" cho điểm (để kiểm và tìm đối tượng trên Canvas)."""
+              index: int = 0, source: str = "", tagged: bool = False, bold: bool = False):
+    """`img`: ảnh numpy hoặc bút vẽ. `tagged`: gắn nhãn "pt:<mắt>:<id>" cho điểm (để kiểm và tìm đối tượng trên Canvas).
+    `bold`: đường viền mắt dày hơn (con trỏ đang ở trên thẻ của mắt này trong panel, như "activated" của CVAT)."""
     p = _painter(img)
     look = look or Look()
     if not look.eye_on(label):
         return
     spec = EYES[label]
     col = look.color_of(label, index)
+    # bảng màu điểm chỉ khi tô theo nhãn và mắt chưa có màu riêng (Enter); Instance / Group / màu riêng: điểm cùng màu mắt (B04)
+    palette = look.point_colors and look.color_by == "label" and label not in (look.colors or {})
     screen = [view.to_screen(pts[i]) for i in spec.ids if i in pts]
     if len(screen) == 8 and look.outline:
         if look.outlined:                                        # Outlined borders: viền ngoài dày hơn dưới đường màu
-            p.poly(screen, look.outline_color, 3)
-        p.poly(screen, col, 1, tag=f"outline:{label}" if tagged else None)
+            p.poly(screen, look.outline_color, 5 if bold else 3)
+        p.poly(screen, col, 3 if bold else 1, tag=f"outline:{label}" if tagged else None)
     if look.text_always and screen:                              # chữ cạnh mắt: ID, label, nguồn nhãn
         parts = [f"#{index + 1}" if "id" in look.text_content else "", label.upper() if "label" in look.text_content else "",
                  f"({source})" if "source" in look.text_content and source else ""]
@@ -215,7 +218,7 @@ def _draw_eye(img, view: View, pts: dict[int, Point], label: str, *, pinned: boo
         kind = (flags or {}).get(i)
         r = max(1, int(round(rb if i in PIN_IDS else rs)))
         tag = f"pt:{label}:{i}" if tagged else None
-        pcol = POINT_PALETTE[pos % len(POINT_PALETTE)] if look.point_colors else col
+        pcol = POINT_PALETTE[pos % len(POINT_PALETTE)] if palette else col
         if kind == "outside":                                    # Outside: dấu x mờ, không vẽ điểm
             p.line((c[0] - r, c[1] - r), (c[0] + r, c[1] + r), (160, 160, 160))
             p.line((c[0] - r, c[1] + r), (c[0] + r, c[1] - r), (160, 160, 160))
@@ -269,14 +272,15 @@ def render_main(session: Session, f: int, size: tuple[int, int] = (960, 460), *,
                 manual: View | None = None, show_ids: bool = True, hide_labels: bool = False, look: Look | None = None,
                 preview: dict[int, Point] | None = None,
                 handle: tuple | None = None, selected: str | None = None, base: np.ndarray | None = None,
-                ids: dict | None = None):
-    """Ảnh khung chính cho frame f. Trả về (ảnh BGR, View). `clicks`: các điểm ghim đang được bấm dở; `override`: điểm đang kéo."""
+                ids: dict | None = None, hidden: frozenset = frozenset(), active: str | None = None):
+    """Ảnh khung chính cho frame f. Trả về (ảnh BGR, View). `clicks`: các điểm ghim đang được bấm dở; `override`: điểm đang kéo;
+    `hidden`: các đối tượng (chỉ số người, nhãn mắt) bị ẩn riêng; `active`: mắt vẽ đậm (xem `draw_overlay`)."""
     view = make_view(session, f, size, anchor, manual)
     look = look or Look()
     img = base.copy() if base is not None else render_base(session, f, size, view, look)
     p = CvPainter(img)
     draw_overlay(p, session, f, view, clicks=clicks, override=override, show_ids=show_ids, hide_labels=hide_labels, look=look,
-                 preview=preview, handle=handle, selected=selected, ids=ids)
+                 preview=preview, handle=handle, selected=selected, ids=ids, hidden=hidden, active=active)
     return p.img, view
 
 
@@ -299,13 +303,18 @@ def resize_handles(view: View, box) -> dict[str, tuple[int, int]]:
 
 
 def draw_overlay(p, session: Session, f: int, view: View, *, clicks=None, override=None, show_ids: bool = True, hide_labels: bool = False,
-                 look: Look | None = None, preview=None, handle=None, selected: str | None = None, ids: dict | None = None) -> None:
-    """Vẽ mọi thứ nằm trên ảnh nền (nhãn các người, mắt đang chọn, tay cầm xoay, mắt đang ghim dở, điểm vừa bấm) bằng bút vẽ `p`."""
+                 look: Look | None = None, preview=None, handle=None, selected: str | None = None, ids: dict | None = None,
+                 hidden: frozenset = frozenset(), active: str | None = None) -> None:
+    """Vẽ mọi thứ nằm trên ảnh nền (nhãn các người, mắt đang chọn, tay cầm xoay, mắt đang ghim dở, điểm vừa bấm) bằng bút vẽ `p`.
+    `hidden`: các đối tượng (chỉ số người, nhãn mắt) không vẽ; người đang chọn là `session.cur`, người khác là `v["layer"]`.
+    Ẩn theo label cho mọi người vẫn là `look.eyes`. `active`: mắt (của người đang chọn) vẽ viền đậm, khi con trỏ ở trên thẻ của nó."""
     look = look or Look()
     if not hide_labels:                                   # các bộ đối tượng khác (người khác): vẽ trước, mắt của bộ đang chọn nằm trên
         for v in session.other_views(f):
             with p.group(look.opacity):
                 for label in look.order():
+                    if (v["layer"], label) in hidden:
+                        continue
                     _draw_eye(p, view, v["points"], label, pinned=False, ids=show_ids, scale=1.0, flags=v["flags"], est=v["est"], look=look,
                               index=v["ids"].get(label, list(EYES).index(label) + 1) - 1, source=v["source"])
     pts = None if hide_labels else session.points_at(f)
@@ -323,8 +332,11 @@ def draw_overlay(p, session: Session, f: int, view: View, *, clicks=None, overri
                 continue
             with p.group(alpha):
                 for label in group:
+                    if (session.cur, label) in hidden:
+                        continue
                     _draw_eye(p, view, pts, label, pinned=pinned, ids=show_ids, scale=1.0, flags=flags, est=est, look=look,
-                              index=(ids or {}).get(label, list(EYES).index(label) + 1) - 1, source=source, tagged=True)
+                              index=(ids or {}).get(label, list(EYES).index(label) + 1) - 1, source=source, tagged=True,
+                              bold=label == active)
     if handle and not hide_labels:                        # mắt đang chọn: khung góc nét đứt, tên, tay cầm xoay (như CVAT)
         if len(handle) >= 3 and handle[2]:
             bx0, by0 = view.to_screen((handle[2][0], handle[2][1]))
@@ -351,8 +363,10 @@ def draw_overlay(p, session: Session, f: int, view: View, *, clicks=None, overri
         p.text((c[0] + 6, c[1] - 6), str(pid), 0.5, (40, 200, 255), halo=False)
 
 
-def render_thumb(session: Session, f: int, view: View, size: tuple[int, int] = (300, 140), hide_labels: bool = False, look: Look | None = None) -> np.ndarray | None:
-    """Ảnh nhỏ của frame f cùng vùng nhìn với khung chính (để so sánh frame trước/sau)."""
+def render_thumb(session: Session, f: int, view: View, size: tuple[int, int] = (300, 140), hide_labels: bool = False, look: Look | None = None,
+                 hidden: frozenset = frozenset()) -> np.ndarray | None:
+    """Ảnh nhỏ của frame f cùng vùng nhìn với khung chính (để so sánh frame trước/sau). `hidden`: đối tượng (người, nhãn mắt) đang ẩn
+    riêng (nút Hidden trên thẻ, phím h) thì cũng không vẽ ở đây; ảnh nhỏ chỉ vẽ người đang chọn (`session.cur`)."""
     if not 0 <= f < session.n_frames:
         return None
     k = size[0] / (view.width / view.k)
@@ -364,6 +378,8 @@ def render_thumb(session: Session, f: int, view: View, size: tuple[int, int] = (
     if pts:
         sub = View(view.x0, view.y0, k, size[0], size[1])
         for label in look.order():
+            if (session.cur, label) in hidden:
+                continue
             _draw_eye(img, sub, pts, label, pinned=False, ids=False, scale=0.6, look=look, index=list(EYES).index(label))
     return img
 

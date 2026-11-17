@@ -1,15 +1,17 @@
 """Cửa sổ EyePin (Tkinter). Mỏng: mọi tính toán nằm trong Session, mọi phần vẽ nằm trong render.
 
-Thanh điều hướng:  |<  <<  <  [ số frame ]  / N  >  >>  >|   ▶   ghim<  >ghim     (số frame tính từ 0, như id frame trong file nhãn)
+Thanh điều hướng (icon kiểu CVAT, chữ chỉ hiện khi trỏ chuột): frame đầu, lùi bước, frame trước, [ số frame ] / N, frame sau, tiến bước, frame cuối, phát, keyframe trước/sau (số frame tính từ 0, như id frame trong file nhãn)
   trong ô số frame: Enter nhảy tới frame đó, ↑/↓ đổi ±1 frame.
 
-Phím (theo thói quen của CVAT khi có thể):
-  ←/→ hoặc D/F  frame trước/sau (Shift: ±10) · Home/End  frame đầu/cuối · Space  phát/dừng
-  H  ẩn/hiện nhãn · C/V  frame ghim trước/sau · K  ghim frame hiện tại từ nhãn tool đã tính (bấm lại để bỏ ghim) · Delete  bỏ frame ghim
-  P  ghim 4 điểm mỗi mắt (bấm 8 điểm, thứ tự tuỳ ý) · G  ghim khi một khoé bị che (bấm 7 điểm: 4 điểm mắt đủ + 3 điểm mắt bị che khoé)
-  Q  bật/tắt Occluded cho điểm đang trỏ chuột · O  bật/tắt Outside · Ctrl+Z / Ctrl+Y  hoàn tác / làm lại · Esc  huỷ ghim dở
+Phím mặc định (theo thói quen của CVAT khi có thể; gán lại ở F2, đủ danh sách ở F1 hoặc design/shortcuts.md; nguồn duy nhất là shortcuts.py):
+  D/F  frame trước/sau · ←/→  frame trước/sau thoả bộ lọc (Shift: ±10) · C/V  lùi/tiến theo bước đặt ở Cài đặt · Home/End  frame đầu/cuối
+  Space  phát/dừng · E/R  frame ghim (keyframe) trước/sau của mắt đang chọn
+  H  ẩn/hiện mắt đang chọn · Shift+H  ẩn/hiện toàn bộ nhãn · L  khoá/mở khoá mắt đang chọn · Shift+L  khoá/mở khoá mọi mắt
+  K  ghim hoặc bỏ ghim frame hiện tại (keyframe riêng của mắt đang chọn, lấy từ nhãn tool đã tính) · Delete  xoá mắt đang chọn
+  N  vẽ một mắt (bấm 4 điểm hoặc kéo khung) · Shift+N  ghim khi một khoé bị che (7 điểm) · Ctrl+N  đối tượng (người) mới, ghim 8 điểm
+  Q  bật/tắt Occluded cho điểm đang trỏ chuột (hoặc /) · O  bật/tắt Outside · P  Pinned (khoá dời nguyên mắt và xoay)
+  Ctrl+Z  hoàn tác · Ctrl+Y  làm lại · Esc  huỷ ghim dở · Ctrl+S  lưu phiên · Ctrl+Shift+S  xuất file import · Ctrl+Shift+E  quét nhãn có sẵn
   cuộn chuột hoặc +/−  phóng to thu nhỏ · kéo chuột (trái vào chỗ trống, giữa hoặc phải)  dời ảnh · 0  về khung tự động · I  ẩn hiện số điểm
-  S  quét · E  xuất file import
 """
 from __future__ import annotations
 
@@ -30,12 +32,14 @@ from .geometry import EYES, MATTRAI, assign_roles, assign_three, derive, four_in
 from .render import (PIN_IDS, Look, RESIZE_HIT, ROTATE_DIST, ROTATE_HIT, draw_overlay, make_view, max_shift, render_base, render_main,
                      render_thumb, render_timeline, resize_handles, status_text)
 from . import shortcuts as sc
-from . import theme
+from . import cvatlogin, theme
 from .cvatapi import CvatError
 from .gui_cvat import CvatMixin, edit_command, net_safe
 from .gui_frames import FramesMixin
-from .gui_objects import LayerSet, ObjectsMixin
-from .icons import IconButton
+from .gui_login import FrontDoor, LoginMixin
+from .gui_objects import LayerSet, ObjectSet, ObjectsMixin
+from .gui_sidebar import ObjectList
+from .icons import BAR_SIZE, IconButton
 from .session import Session
 
 MAIN = (960, 460)
@@ -106,10 +110,11 @@ class _Pt:
 
 
 ICON_PNG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "eyepin.png")
+DRAG_MIN_PX = 3                                  # kéo điểm / cả mắt: chuột dời dưới ngần này px màn hình từ chỗ bấm thì coi là chỉ bấm (không ghim)
 MOUSE_SPEED_MIN, MOUSE_SPEED_MAX = 0.1, 3.0       # độ nhạy chuột khi kéo: 1 = như cũ, nhỏ hơn = chậm hơn
 
 
-class App(ObjectsMixin, FramesMixin, CvatMixin):
+class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
     @staticmethod
     def _set_window_icon(root: tk.Tk) -> None:
         """Icon cửa sổ và thanh tác vụ là ảnh eyepin.png. Thiếu file hoặc lỗi thì bỏ qua, tool vẫn mở bình thường."""
@@ -136,6 +141,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.pinning: str | None = None            # None | "full" | "hidden"
         self.drag = None
         self._m0 = None                 # chỗ bấm chuột (toạ độ khung chưa xoay) làm gốc để nhân độ nhạy chuột khi kéo
+        self._manual0 = None            # khung nhìn (`manual`) ngay trước lần bấm chuột: huỷ kéo thì trả lại (`_cancel_drag`)
         self.drag_eye = None            # (nhãn mắt, điểm bấm đầu, điểm hiện tại) khi kéo cả mắt
         self.view = None
         self.manual = None
@@ -154,8 +160,10 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.rot = 0                      # số lần xoay 90 độ theo chiều kim đồng hồ (0..3), chỉ đổi cách nhìn
         self.tool = "cursor"             # cursor: kéo nhãn; hand: kéo chuột là dời ảnh
         self.filter = "all"
-        self.locked = LayerSet(lambda: self.s.cur if self.s else 0)      # khoá theo từng bộ đối tượng
+        self.locked = LayerSet(lambda: self.s.cur if self.s else 0, self._eye_key)   # khoá theo từng mắt của từng bộ đối tượng (gắn mã mắt, B09)
+        self.hidden_objs = ObjectSet(self._eye_key, self._n_layers)      # (chỉ số người, label) ẩn riêng từng mắt; khác look.eyes (ẩn label cho mọi người)
         self.playing = False
+        self._play_job = None                # hẹn giờ của nhịp phát kế tiếp (`_tick`); huỷ khi dừng hoặc đóng cửa sổ
         self.hover: tuple[int, int] | None = None
         self._pan = None
         self._left_pan = False
@@ -165,6 +173,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self._turns_sig: tuple = ()          # chữ ký các đoạn quay đầu đang hiện ở tab Issues
         self._turns_seen: set = set()        # đoạn quay đầu đã báo (người, frame đầu, frame cuối): chỉ báo lại khi có đoạn mới
         self._turn_target = None             # (người, frame) của đoạn quay đầu mới nhất, cho nút "Tới đoạn quay đầu"
+        self._panel_key = None               # (phiên, frame, người, lựa chọn) lần cuối đồng bộ thẻ và nút ★ thanh trái (xem `_sync_panel`)
         self._auto_view = None               # khung tự động đã canh cho frame hiện tại (giữ nguyên khi sửa nhãn, như CVAT)
         self._auto_key = None
         self._init_cvat()
@@ -172,6 +181,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.sync_look_vars()
         self._bind_keys()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root.bind("<Destroy>", self._on_root_destroy, add="+")      # mọi đường huỷ cửa sổ (shutdown, root.destroy() thẳng) đều huỷ hẹn giờ còn chờ (B13)
         self.ask_restore = self._ask_restore
         self._autosave_job = None
         self._schedule_autosave()
@@ -183,7 +193,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         top.pack(fill="x")
         self._top_bar = top
         self._build_name_row()
-        B = lambda name, cmd, tip, **kw: IconButton(top, name, lambda b: cmd(), tip=tip, kind="bar", **kw)
+        B = lambda name, cmd, tip, **kw: IconButton(top, name, lambda b: cmd(), tip=tip, kind="bar", size=BAR_SIZE, **kw)
 
         def popup(menu):
             return lambda b: menu.tk_popup(b.winfo_rootx(), b.winfo_rooty() + b.winfo_height())
@@ -201,31 +211,39 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         menu.add_separator()
         menu.add_command(label=f"Cài đặt ({self.kl('settings')})", command=self.show_settings)
         menu.add_command(label=f"Phím tắt ({self.kl('shortcuts')})", command=self.show_shortcuts)
-        IconButton(top, "menu", popup(menu), tip="Menu", kind="bar").pack(side="left", padx=(6, 0))
+        IconButton(top, "menu", popup(menu), tip="Menu", kind="bar", size=BAR_SIZE).pack(side="left", padx=(6, 0))
         B("save", self.save_work, f"Lưu phiên ({self.kl('save')})").pack(side="left")
         B("undo", self.undo, f"Hoàn tác ({self.kl('undo')})").pack(side="left")
         B("redo", self.redo, f"Làm lại ({self.kl('redo')})").pack(side="left", padx=(0, 10))
         B("first", lambda: self.step("first"), f"Frame đầu ({self.kl('first')})").pack(side="left")
         B("back10", lambda: self.step(-10), f"Lùi 10 frame ({self.kl('jump_back')})").pack(side="left")
-        B("prev", lambda: self.step(-1), f"Frame trước ({self.kl('frame_prev')})").pack(side="left")
+        # frame trước/kế: như CVAT, khi đang lọc thì nhảy tới frame thoả bộ lọc và icon đổi sang previous/next-filtered-icon
+        self.frame_prev_btn = B("prev", lambda: self.search(-1), lambda: self._nav_tip(-1))
+        self.frame_prev_btn.pack(side="left")
         self.entry_var = tk.StringVar(value="0")
         self.entry = ttk.Entry(top, textvariable=self.entry_var, width=6, justify="center")
         self.entry.pack(side="left", padx=3)
         self.entry.bind("<Return>", self.on_entry)
         self.entry.bind("<Up>", self.on_entry_up)
         self.entry.bind("<Down>", self.on_entry_down)
+        for seq in ("<Escape>", "<Tab>", "<ISO_Left_Tab>"):      # Esc bỏ chữ gõ dở; Tab không chuyển focus sang panel phải (B06)
+            self.entry.bind(seq, self._leave_entry)
         self.entry.bind("<FocusOut>", lambda e: self._sync_entry())
         self.root.bind_all("<ButtonPress>", self._click_focus, add="+")
         self.total = tk.StringVar(value="/ 0")
         ttk.Label(top, style="Bar.TLabel", textvariable=self.total, width=7).pack(side="left")
-        B("next", lambda: self.step(1), f"Frame kế ({self.kl('frame_next')})").pack(side="left")
+        self.frame_next_btn = B("next", lambda: self.search(1), lambda: self._nav_tip(1))
+        self.frame_next_btn.pack(side="left")
         B("fwd10", lambda: self.step(10), f"Tiến 10 frame ({self.kl('jump_fwd')})").pack(side="left")
         B("last", lambda: self.step("last"), f"Frame cuối ({self.kl('last')})").pack(side="left")
         self.play_btn = B("play", self.toggle_play, f"Phát / dừng ({self.kl('play')})")
         self.play_btn.pack(side="left", padx=(10, 0))
-        B("prev", lambda: self.jump_pin(-1), f"Keyframe trước ({self.kl('prev_keyframe')})", caption="◀ KF").pack(side="left", padx=(10, 0))
-        B("next", lambda: self.jump_pin(1), f"Keyframe kế ({self.kl('next_keyframe')})", caption="KF ▶").pack(side="left")
-        # nhóm bên phải, có chữ nhỏ dưới biểu tượng như CVAT
+        # nhảy keyframe (của mắt đang chọn, không chọn thì của cả job): CVAT chỉ có trên thẻ đối tượng; icon = mũi tên + sao
+        self.kf_prev_btn = B("kf_prev", lambda: self.jump_pin(-1), f"Keyframe trước của mắt đang chọn, hoặc của cả job ({self.kl('prev_keyframe')})")
+        self.kf_prev_btn.pack(side="left", padx=(10, 0))
+        self.kf_next_btn = B("kf_next", lambda: self.jump_pin(1), f"Keyframe kế của mắt đang chọn, hoặc của cả job ({self.kl('next_keyframe')})")
+        self.kf_next_btn.pack(side="left")
+        # nhóm bên phải (Thông tin, Toàn màn hình, Lọc, Hiển thị, CVAT): chỉ icon, chữ hiện khi trỏ chuột
         flt_menu = tk.Menu(top, tearoff=0)
         self._filter_var = tk.StringVar(value="all")
         for key_, text in Session.FILTERS.items():
@@ -241,12 +259,13 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         view_menu.add_command(label=f"Ẩn/hiện toàn bộ nhãn ({self.kl('hide_all')})", command=self.toggle_labels)
         view_menu.add_command(label=f"Đổi mắt nằm trên ({self.kl('swap_top')})", command=self.swap_top)
         view_menu.add_command(label="Cỡ điểm, độ đặc, độ sáng…", command=self.show_display_dialog)
-        self.view_btn = IconButton(top, "display", popup(view_menu), tip="Lớp, cỡ điểm, độ sáng", caption="Hiển thị", kind="bar")
-        self.fullscreen_btn = B("fullscreen", self.toggle_fullscreen, f"Toàn màn hình ({self.kl('fullscreen')})", caption="Toàn màn hình")
-        self.filter_btn = IconButton(top, "filter", popup(flt_menu), caption="Lọc", kind="bar",
+        self.view_btn = IconButton(top, "display", popup(view_menu), tip="Hiển thị: lớp, cỡ điểm, độ sáng", kind="bar", size=BAR_SIZE)
+        self.fullscreen_btn = B("fullscreen", self.toggle_fullscreen, f"Toàn màn hình ({self.kl('fullscreen')})")
+        self.filter_btn = IconButton(top, "filter", popup(flt_menu), kind="bar", size=BAR_SIZE,
                                      tip=lambda: f"Lọc frame (đang: {Session.FILTERS[self.filter]}). {self.kl('search_prev')}/{self.kl('search_next')} nhảy tới frame thoả")
-        info_btn = B("info", self.show_info, f"Thông tin job ({self.kl('info')})", caption="Thông tin")
-        for w in (self.view_btn, self.filter_btn, self.fullscreen_btn, info_btn, *self._cvat_buttons(top)):
+        info_btn = B("info", self.show_info, f"Thông tin job ({self.kl('info')})")
+        self.logout_btn = B("logout", self.logout, "Đăng xuất: xoá đăng nhập đã nhớ và các phiên làm việc CVAT đã lưu trên máy này, rồi đóng EyePin (hỏi trước nếu còn công chưa gửi)")
+        for w in (self.logout_btn, self.view_btn, self.filter_btn, self.fullscreen_btn, info_btn, *self._cvat_buttons(top)):    # logout_btn đầu tiên = ngoài cùng bên phải
             w.pack(side="right", padx=2)
         # --- thân: thanh công cụ dọc bên trái | ảnh | panel phải ---
         body = ttk.Frame(self.root)
@@ -268,9 +287,10 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             T(name, cmd, tip).pack(pady=1)
         tk.Frame(tools, bg=theme.PAPER_LINE, height=1).pack(fill="x", padx=6, pady=6)
         for name, cmd, tip in (("pin", self.start_draw, f"Vẽ một mắt: chọn label, bấm 4 điểm hoặc kéo khung, rồi Apply ({self.kl('draw_eye')})"),
-                               ("pin_hidden", lambda: self.start_pin("hidden"), f"Ghim khi che khoé, 7 điểm ({self.kl('draw_hidden')})"),
-                               ("keyframe", self.toggle_pin_here, f"Ghim / bỏ ghim frame này ({self.kl('keyframe')})")):
+                               ("pin_hidden", lambda: self.start_pin("hidden"), f"Ghim khi che khoé, 7 điểm ({self.kl('draw_hidden')})")):
             T(name, cmd, tip).pack(pady=1)
+        self.kf_btn = T("star_off", self.toggle_pin_here, f"Ghim / bỏ ghim keyframe ở frame này: mắt đang chọn, không chọn thì cả frame ({self.kl('keyframe')})")
+        self.kf_btn.pack(pady=1)                                       # StarFilled khi frame này là keyframe (như nút Keyframe của CVAT)
         self.eye_btn = T("eye", self.toggle_labels, f"Ẩn/hiện toàn bộ nhãn ({self.kl('hide_all')})")
         self.eye_btn.pack(pady=1)
         tk.Frame(tools, bg=theme.PAPER_LINE, height=1).pack(fill="x", padx=6, pady=6)
@@ -309,14 +329,17 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self._patch_item = self.canvas.create_image(0, 0, anchor="nw", state="hidden")
         self._base_key = None
         self._thumb_job = None
-        cmp_tab = ttk.Frame(side)
-        att_tab = self.issues_tab = ttk.Frame(side)
+        # tab theo thứ tự CVAT (Objects | Labels | Issues), rồi tab riêng của EyePin "Frame lân cận" (bật/tắt trong Cài đặt > Workspace)
         obj_tab = self.objects_tab = ttk.Frame(side)
-        side.add(obj_tab, text="Đối tượng")
-        side.add(cmp_tab, text="Frame lân cận")
-        side.add(att_tab, text="Issues")
-        labels_tab = ttk.Frame(side)
+        labels_tab = self.labels_tab = ttk.Frame(side)
+        att_tab = self.issues_tab = ttk.Frame(side)
+        cmp_tab = self.neighbors_tab = ttk.Frame(side)
+        side.add(obj_tab, text="Objects")
         side.add(labels_tab, text="Labels")
+        side.add(att_tab, text="Issues")
+        self._neighbors_on = bool(self.settings["workspace"].get("show_neighbors", True))
+        if self._neighbors_on:
+            side.add(cmp_tab, text="Frame lân cận")
         self.build_labels_tab(labels_tab)
         ttk.Label(cmp_tab, text="Frame trước (chỉ để so sánh)").pack(anchor="w")
         self.t_prev = tk.Label(cmp_tab)
@@ -328,38 +351,22 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.t_next.pack()
         self.c_next = tk.StringVar()
         ttk.Label(cmp_tab, textvariable=self.c_next).pack(anchor="w")
-        self.tree = ttk.Treeview(obj_tab, columns=("vai", "sao", "trang"), height=14, selectmode="browse")
-        self.tree.heading("#0", text="Đối tượng")
-        self.tree.heading("vai", text="Loại")
-        self.tree.heading("sao", text="★")
-        self.tree.heading("trang", text="Trạng thái")
-        self.tree.column("#0", width=140)
-        self.tree.column("vai", width=100, anchor="center")
-        self.tree.column("sao", width=34, anchor="center")
-        self.tree.column("trang", width=76, anchor="center")
-        self.tree.bind("<Button-1>", self.on_tree_click, add="+")
+        # tab Objects: đầu danh sách (Items, Sort by, khoá/ẩn/mở tất cả, +, xoá) rồi danh sách thẻ kiểu CVAT. `self.tree` giữ tên cũ và
+        # API giống ttk.Treeview (iid `eye:<label>[@người]`, `pt:<id>[@người]`, values `(vai, sao, trang)`), nút nằm trên từng thẻ.
+        self._objects_extras(obj_tab)
+        self._card_hover: str | None = None          # thẻ đang có con trỏ chuột (mắt đó vẽ đậm trên ảnh)
+        self.tree = ObjectList(obj_tab, on_action=self._on_object_action, on_select=self._on_tree_select,
+                               keys=self._card_keys(), on_hover=self._on_card_hover)
         self.tree.pack(fill="both", expand=True)
-        nav = ttk.Frame(obj_tab)                                       # hàng điều hướng keyframe của đối tượng (như thẻ đối tượng CVAT)
-        nav.pack(fill="x", pady=(3, 0))
-        for name, cmd, tip in (("first", self.first_keyframe, "Keyframe đầu tiên"),
-                               ("prev", lambda: self.jump_pin(-1), f"Keyframe trước ({self.kl('prev_keyframe')})"),
-                               ("next", lambda: self.jump_pin(1), f"Keyframe kế ({self.kl('next_keyframe')})"),
-                               ("last", self.last_keyframe, "Keyframe cuối cùng"),
-                               ("keyframe", self.toggle_pin_here, f"Ghim / bỏ ghim keyframe ★ ({self.kl('keyframe')})")):
-            IconButton(nav, name, lambda b, c=cmd: c(), tip=tip, kind="tool").pack(side="left", padx=2)
-        row = ttk.Frame(obj_tab)
-        row.pack(fill="x", pady=3)
-        for name, cmd, tip in (("lock", self.toggle_lock, f"Khoá/mở khoá mắt đang chọn ({self.kl('lock')})"),
-                               ("eye", self.toggle_eye_hidden, f"Ẩn/hiện mắt đang chọn ({self.kl('hide')})")):
-            IconButton(row, name, lambda b, c=cmd: c(), tip=tip, kind="tool").pack(side="left", padx=2)
-        ttk.Button(row, text="Occluded", width=9, command=lambda: self.toggle_flag("occluded")).pack(side="left", padx=(10, 2))
-        ttk.Button(row, text="Outside", width=8, command=lambda: self.toggle_flag("outside")).pack(side="left", padx=2)
-        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
-        self._objects_extras(obj_tab, nav, row)
         self.build_issues_tab(att_tab)
         self.listbox = tk.Listbox(att_tab, height=14, width=44)
         self.listbox.pack(fill="both", expand=True)
         self.listbox.bind("<Double-Button-1>", self.on_list)
+        self.listbox.bind("<<ListboxSelect>>", self.on_issue_select)
+        self.issue_detail = tk.Label(att_tab, text="", anchor="w", justify="left", wraplength=400,
+                                     bg=theme.WHITE, fg=theme.INK, relief="solid", bd=1, padx=6, pady=4)
+        self.issue_detail.pack(fill="x", pady=(4, 0))
+        self.issue_info = []
         self.items: list[int] = []
         self.status = tk.StringVar(value="Mở một thư mục ảnh để bắt đầu. Cuộn chuột để phóng to; kéo chuột để dời ảnh.")
         ttk.Label(self.root, textvariable=self.status, anchor="w").pack(fill="x", padx=8)
@@ -486,6 +493,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             r.unbind(seq)
         self._bound = []
         self.handlers = {}
+        self._letter_keys = {}                                    # phím chữ cái (dạng đã chuẩn hoá, không phụ thuộc Caps Lock) -> handler
         funcs = self._actions()
         assert set(funcs) == set(sc.BY_ID), set(funcs) ^ set(sc.BY_ID)
         always = {"shortcuts", "settings"}
@@ -497,8 +505,25 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
                 return "break"
             self.handlers[aid] = handler
             for seq in self.bind_map[aid]:
-                r.bind(seq, handler)
-                self._bound.append(seq)
+                variant = sc.caps_variant(seq)
+                if variant is None:
+                    r.bind(seq, handler)
+                    self._bound.append(seq)
+                    continue
+                # Caps Lock đổi hoa/thường của keysym: gắn cả hai dạng vào một bộ phân phối nhìn bit Lock vs Shift (B14)
+                self._letter_keys[seq] = handler
+                for tk_seq in (seq, variant):
+                    if tk_seq not in self._bound:
+                        r.bind(tk_seq, self._key_dispatch)
+                        self._bound.append(tk_seq)
+        if hasattr(self, "tree"):
+            self.tree.set_keys(self._card_keys())                 # chữ khi trỏ vào nút trên thẻ ghi phím hiện hành
+
+    def _key_dispatch(self, e):
+        """Phím chữ cái trên cửa sổ chính: tính phím người dùng thật sự bấm (Caps Lock không phải Shift, `shortcuts.event_to_seq`) rồi chạy
+        hành động gán cho phím đó. Không có hành động thì trả None để phím đi tiếp (ô nhập chữ...)."""
+        handler = self._letter_keys.get(sc.event_to_seq(e.keysym, e.state))
+        return handler(e) if handler else None
 
     # ---- cài đặt, phím tắt, đối tượng (bước 3, 4) ----
     def _apply_settings_to_look(self):
@@ -575,24 +600,28 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             self.notice += " Chú ý: job đã bị sửa trên CVAT kể từ lần làm việc trước; gửi lên sẽ ghi đè các sửa đó."
         return True
 
-    def save_work(self, auto: bool = False):
-        """Ctrl+S / tự lưu: ghi các frame ghim và cờ ra file phiên (chưa phải file import; xuất file import là Ctrl+Shift+S)."""
+    def save_work(self, auto: bool = False) -> bool:
+        """Ctrl+S / tự lưu: ghi các frame ghim và cờ ra file phiên (chưa phải file import; xuất file import là Ctrl+Shift+S).
+        Trả True khi đã ghi file phiên; False khi không ghi (không có phiên, đang mở bằng --pins, tự lưu lúc không có thay đổi, lỗi ghi)."""
         if not self.s:
-            return
+            return False
         if self.scratch:
             if not auto:
                 self.notice = "Đang mở bằng --pins: không ghi file phiên (xuất file import vẫn dùng được)."
                 self.refresh(light=True)
-            return
+            return False
         if auto and not self.s.dirty:
-            return
+            return False
+        saved = True
         try:
             self.s.save_state(self.state_path())
         except OSError as err:
+            saved = False
             self.notice = f"Không lưu được: {err}"
         else:
             self.notice = ("Tự lưu lúc " if auto else "Đã lưu lúc ") + __import__("time").strftime("%H:%M:%S") + "."
         self.refresh(light=True)
+        return saved
 
     def _schedule_autosave(self):
         ws = self.settings["workspace"]
@@ -641,6 +670,10 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             return
         if not self.confirm_close():
             return
+        self.shutdown()
+
+    def shutdown(self):
+        """Đóng cửa sổ không hỏi nữa (nơi gọi đã hỏi): lưu cài đặt, đóng client CVAT, dừng hẹn giờ, huỷ cửa sổ."""
         self.settings["display"] = {k: getattr(self.look, k) for k in DISPLAY_KEYS}
         try:
             sc.save_settings(self.settings)
@@ -648,6 +681,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             pass
         if self.cvat_client is not None:
             self.cvat_client.close()
+        self.playing = False
+        self._cancel_play_job()
         self.root.destroy()
 
     def save_settings(self):
@@ -725,8 +760,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         total = len(s.labels)
         rows = [("Thống kê (mỗi mắt)", f"Manually {manual} · Interpolated {total - manual} · Total {total}")]
         try:
-            kf = len(next(iter(s.build_tracks().values())).keys)
-            rows.append(("Keyframe khi xuất", f"{kf} (sai số nội suy CVAT tối đa 2 px), tiết kiệm {total - kf} frame so với ghim hết"))
+            per_eye = " · ".join(f"{label} {len(t.keys)}" for label, t in s.build_tracks().items())   # B24: mỗi mắt một track, đếm từng mắt
+            rows.append(("Keyframe khi xuất", f"{per_eye} (người đang chọn; nội suy CVAT lệch tối đa 2 px)"))
         except ValueError:
             pass
         return rows
@@ -754,12 +789,24 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
                 self.notice = f"Đã chọn {label}."
                 self.refresh(light=True)
 
+    def _all_locked(self) -> bool:
+        """Mọi đối tượng đang có thẻ trong panel (mọi mắt của mọi người) đều khoá (nút khoá tất cả ở đầu danh sách đặc khi đúng, như CVAT).
+        Mắt đã xoá của người thứ 2 trở đi không còn thẻ nên không tính (B10)."""
+        return bool(self.s) and all(self.locked.has(i, l) for i, l in self._object_rows())
+
     def toggle_lock_all(self):
-        if self.locked:
-            self.locked.clear()
+        """Phím L, nút khoá tất cả ở đầu danh sách, Run actions "lock_all": như CVAT, khoá MỌI đối tượng đang có (mọi mắt của mọi người,
+        mắt đã xoá thì không: vẽ lại là đối tượng mới, không khoá); đã khoá hết thì mở khoá hết."""
+        self._cancel_drag()                              # giữa lúc kéo: huỷ kéo (B21), thả chuột sau đó không sửa mắt vừa khoá / ẩn / Pinned
+        n = self._n_layers()
+        on = not self._all_locked()
+        if on:
+            for i, l in (self._object_rows() if self.s else [(0, l) for l in EYES]):
+                self.locked.put(i, l, True)
         else:
-            self.locked.update(EYES)
-        self.notice = "Đã khoá cả hai mắt." if self.locked else "Đã mở khoá cả hai mắt."
+            for l in EYES:
+                self.locked.set_all(l, False, n)
+        self.notice = "Đã khoá mọi mắt của mọi đối tượng." if on else "Đã mở khoá mọi mắt của mọi đối tượng."
         self.refresh()
 
     def copy_pins(self):
@@ -879,6 +926,9 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             ws["remember_display"] = rem.get()
             self.save_settings()
         ttk.Checkbutton(t2, text="Nhớ cài đặt hiển thị (cỡ điểm, độ sáng, lớp…) cho lần mở sau", variable=rem, command=apply_ws).pack(anchor="w", padx=8, pady=8)
+        nbr = tk.BooleanVar(value=self._neighbors_on)
+        ttk.Checkbutton(t2, text="Hiện tab Frame lân cận", variable=nbr,
+                        command=lambda: self.set_neighbors_tab(nbr.get())).pack(anchor="w", padx=8, pady=(0, 8))
         auto = tk.BooleanVar(value=ws["autosave"])
         mins = tk.DoubleVar(value=ws["autosave_min"])
 
@@ -937,6 +987,17 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         ms.bind("<FocusOut>", self._apply_mouse_speed)
         ttk.Label(t2, text="1 = như cũ; nhỏ hơn 1 = chuột chậm hơn (đỡ nhạy) khi kéo điểm, kéo mắt, xoay, vẽ khung và dời ảnh.",
                   wraplength=420, foreground=theme.MUTED).pack(anchor="w", padx=8, pady=(0, 4))
+        self._remember_hours_var = tk.DoubleVar(value=cvatlogin.remember_hours(self.settings))
+        hf = ttk.Frame(t2)
+        hf.pack(anchor="w", padx=8, pady=2)
+        ttk.Label(hf, text="Nhớ đăng nhập CVAT (giờ)", width=26).pack(side="left")
+        self._remember_hours_spin = ttk.Spinbox(hf, from_=0, to=cvatlogin.MAX_HOURS, increment=1, format="%.0f", textvariable=self._remember_hours_var,
+                                                width=7, command=self._apply_remember_hours)
+        self._remember_hours_spin.pack(side="left")
+        self._remember_hours_spin.bind("<Return>", self._apply_remember_hours)
+        self._remember_hours_spin.bind("<FocusOut>", self._apply_remember_hours)
+        ttk.Label(t2, text="Áp dụng cho lần đăng nhập sau. 0 = không nhớ (và xoá đăng nhập đang nhớ). Mật khẩu không bao giờ được lưu; khoá lưu mã hoá, "
+                           "chỉ tài khoản Windows này đọc được.", wraplength=420, foreground=theme.MUTED).pack(anchor="w", padx=8, pady=(0, 4))
         # --- tab phím tắt ---
         tv = ttk.Treeview(t3, columns=("keys", "cvat"), height=18, selectmode="browse")
         for c, t, w in (("#0", "Hành động", 300), ("keys", "Phím EyePin", 160), ("cvat", "Phím CVAT", 140)):
@@ -1059,9 +1120,11 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
 
     def _show_session(self):
         """Đưa cửa sổ về frame đầu của phiên `self.s` vừa đặt (mở thư mục hoặc job CVAT)."""
+        self._cancel_drag()                              # lần kéo đang dở thuộc phiên cũ
         self.f, self.anchor, self.clicks, self.pinning, self.manual = 0, None, [], None, None
         self.draft, self.draft_drag, self._box0 = None, None, None
         self.items = []
+        self.hidden_objs.clear()                         # chỉ số người của phiên cũ không còn đúng
         self._turns_sig = ()
         self._turns_seen, self._turn_target = set(), None
         self.turn_bar.place_forget()
@@ -1076,6 +1139,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
     def go(self, f: int):
         if self.s:
             f = max(0, min(self.s.n_frames - 1, int(f)))
+            if f != self.f:
+                self._cancel_drag("đổi frame")                       # đang giữ chuột kéo nhãn của frame cũ (phím ←/→...): huỷ, không ghim
             if self.draft and f != self.f:                           # mắt vẽ dở thuộc frame cũ: bỏ, không tự ghim
                 self.draft, self.draft_drag = None, None
                 self.notice = "Đã bỏ mắt vẽ dở (chưa Apply) vì đổi frame."
@@ -1105,8 +1170,15 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             self.go(int(self.entry_var.get()))
         except ValueError:
             self.notice = "Số frame không hợp lệ."
-            self._sync_entry()
+        return self._leave_entry()
+
+    def _leave_entry(self, _=None):
+        """Rời ô số frame bằng phím (Enter, ↑/↓, Esc, Tab): ô về số frame hiện tại, focus về ảnh, vì `_typing` bỏ qua mọi phím tắt khi
+        focus còn ở ô (B06: Del, Ctrl+Z bị nuốt). Trả "break": phím này không chạy tiếp phím tắt cùng phím trên cửa sổ (Enter đổi màu mắt,
+        Esc huỷ / thoát toàn màn hình) và Tab không chuyển focus sang widget khác."""
+        self._sync_entry()
         self.canvas.focus_set()
+        return "break"
 
     def _click_focus(self, e, focused="now"):
         """Bấm chuột ở bất cứ đâu ngoài ô số frame khi ô đó đang giữ focus: trả focus về ảnh và trả ô về số frame hiện tại.
@@ -1123,32 +1195,70 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
 
     def on_entry_up(self, _):
         self.step(1)
-        return "break"
+        return self._leave_entry()
 
     def on_entry_down(self, _):
         self.step(-1)
-        return "break"
+        return self._leave_entry()
 
     def _sync_entry(self):
         self.entry_var.set(str(self.f))
+
+    def _on_root_destroy(self, e):
+        if e.widget is self.root:                # sự kiện <Destroy> của mọi widget con cũng tới thẻ "."
+            self._cancel_all_after()
+
+    def _cancel_all_after(self):
+        """Huỷ MỌI hẹn giờ `after` / `after_idle` đang chờ của trình thông dịch này (tự lưu, ảnh thu nhỏ, nhịp phát, vẽ gộp, tooltip, hộp
+        mạng...). `Tk.destroy` xoá lệnh Python nhưng không xoá hẹn giờ; hẹn giờ mồ côi nổ khi vòng lặp sự kiện của cửa sổ khác chạy cùng luồng:
+        "invalid command name ..._autosave_tick" (B13)."""
+        for attr in ("_autosave_job", "_play_job", "_thumb_job", "_motion_job"):
+            if hasattr(self, attr):
+                setattr(self, attr, None)
+        try:
+            ids = self.root.tk.splitlist(self.root.tk.call("after", "info"))
+        except tk.TclError:
+            return
+        for job in ids:
+            try:
+                self.root.after_cancel(job)
+            except tk.TclError:
+                pass
+
+    def _cancel_play_job(self):
+        """Huỷ nhịp phát đang hẹn (nếu có). Chỉ giữ MỘT hẹn giờ `_tick`: bật/tắt Space nhanh từng để lại hai chuỗi (phát nhanh gấp đôi)."""
+        job, self._play_job = self._play_job, None
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except tk.TclError:
+                pass
 
     def toggle_play(self):
         if not self.s:
             return
         self.playing = not self.playing
         self.play_btn.set_icon("pause" if self.playing else "play")
+        self._cancel_play_job()
         if self.playing:
-            self.root.after(self.settings["player"]["speed_ms"], self._tick)
+            self._play_job = self.root.after(self.settings["player"]["speed_ms"], self._tick)
+        else:
+            self.refresh()                       # dừng (Space hoặc hết clip): lúc phát chỉ vẽ nhẹ, giờ vẽ đầy đủ theo frame đang dừng
 
     def _tick(self):
+        self._cancel_play_job()                  # nhịp này đang chạy (hoặc được gọi tay): bỏ hẹn cũ để không có hai chuỗi
         if not (self.playing and self.s):
             return
         if self.f >= self.s.n_frames - 1:
             self.toggle_play()
             return
+        self._cancel_drag("đổi frame")           # bấm kéo nhãn trong lúc phát: frame chạy tiếp thì huỷ như khi đổi frame bằng phím
+        if self.draft:                           # mắt vẽ dở thuộc frame cũ: bỏ như `go` (B21)
+            self.draft, self.draft_drag = None, None
+            self.notice = "Đã bỏ mắt vẽ dở (chưa Apply) vì đổi frame."
         self.f += 1
         self.refresh(light=True)
-        self.root.after(self.settings["player"]["speed_ms"], self._tick)
+        self._play_job = self.root.after(self.settings["player"]["speed_ms"], self._tick)
 
     def _key_frames(self) -> list[int]:
         """Keyframe để điều hướng: của mắt đang chọn nếu có, không thì của cả job."""
@@ -1193,6 +1303,10 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             self.refresh()
 
     def cancel_pin(self):
+        label_drag = any(d is not None for d in (self.drag, self.drag_eye, self.drag_rot, self.drag_resize))
+        if self._cancel_drag("nhấn Esc") and label_drag:         # đang giữ chuột kéo nhãn: Esc chỉ huỷ lần kéo (B21)
+            self.refresh()
+            return
         if not self.pinning and not self.draft and self.root.attributes("-fullscreen"):
             self.toggle_fullscreen()
             return
@@ -1365,6 +1479,20 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         x0, y0 = self._m0
         return _Pt(x0 + (e.x - x0) * s, y0 + (e.y - y0) * s, getattr(e, "delta", 0))
 
+    def _apply_remember_hours(self, *_):
+        """Ô "Nhớ đăng nhập CVAT (giờ)" của Cài đặt: lưu số giờ (kẹp 0–72); 0 thì xoá luôn đăng nhập đang nhớ. Ô chứa chữ thì bỏ qua."""
+        try:
+            v = float(self._remember_hours_var.get())
+        except (tk.TclError, ValueError):
+            return
+        if v != v:                                                       # NaN
+            return
+        v = min(float(cvatlogin.MAX_HOURS), max(0.0, v))
+        self.settings["workspace"]["remember_login_hours"] = int(v) if v == int(v) else v
+        if v <= 0:
+            cvatlogin.forget_login()
+        self.save_settings()
+
     def _apply_mouse_speed(self, *_):
         try:
             v = float(self._mouse_speed_var.get())
@@ -1439,7 +1567,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
 
     def _handle_arg(self):
         label, _ = self._selected() if self.s else (None, None)
-        if label is None or self.hide_labels or label in self.locked or label in self.pinned_eyes or not self.look.eyes.get(label, True):
+        if label is None or self.hide_labels or label in self.locked or label in self.pinned_eyes or self._obj_hidden(self.s.cur, label):
             return None
         h = self._handle_for(label)
         if not h:
@@ -1490,6 +1618,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         label, _ = self._selected() if self.s else (None, None)
         if label is None:
             self.notice = "Chọn một mắt trong panel Đối tượng (hoặc bấm vào mắt) trước khi xoay."
+        elif not self._eye_visible(label):
+            self.notice = f"{label} đang ẩn; hiện lại rồi hãy xoay."
         elif label in self.locked or label in self.pinned_eyes:
             self.notice = "Mắt này đang bị khoá hoặc Pinned."
         elif self._eye_points(label) is None:
@@ -1516,9 +1646,19 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         if self.s:
             self.refresh()
 
+    def _nav_tip(self, step: int) -> str:
+        """Chữ khi trỏ vào nút frame trước/kế: khi đang lọc thì nút nhảy tới frame thoả bộ lọc (như CVAT)."""
+        word = "kế" if step > 0 else "trước"
+        if self.filter == "all":
+            return f"Frame {word} ({self.kl('frame_next' if step > 0 else 'frame_prev')})"
+        return f"Frame {word} thoả bộ lọc \"{Session.FILTERS[self.filter]}\" ({self.kl('search_next' if step > 0 else 'search_prev')})"
+
     def set_filter(self):
         self.filter = self._filter_var.get()
         self.filter_btn.set_active(self.filter != "all")
+        filt = self.filter != "all"                                     # CVAT: previous/next-filtered-icon khi đang lọc
+        self.frame_prev_btn.set_icon("prev_filtered" if filt else "prev")
+        self.frame_next_btn.set_icon("next_filtered" if filt else "next")
         self.notice = f"Bộ lọc: {Session.FILTERS[self.filter]}" + ("" if self.filter == "all" else " — ←/→ nhảy tới frame thoả bộ lọc.")
         self.refresh()
 
@@ -1537,6 +1677,73 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             self.go(g)
 
     # ---- panel Đối tượng ----
+    CARD_KEY_ACTIONS = ("outside", "lock", "occluded", "hide", "keyframe", "pinned", "prev_keyframe", "next_keyframe")
+
+    def _card_keys(self) -> dict[str, str]:
+        """Phím hiện hành của các nút trên thẻ (để ghi trong chữ khi trỏ chuột)."""
+        return {aid: self.kl(aid) for aid in self.CARD_KEY_ACTIONS}
+
+    def _on_object_action(self, action: str, iid: str) -> None:
+        """Nút trên thẻ đối tượng (spec 4.2). Nút mang iid của thẻ và không tự đổi lựa chọn, nên ở đây chọn đúng thẻ (đúng người) trước rồi
+        mới gọi hàm có sẵn (chúng đọc `_selected()`). Bấm trên panel nghĩa là chuột đã rời ảnh: bỏ vị trí chuột cũ để Hidden/Lock/Occluded
+        tác động lên đối tượng của thẻ chứ không lên mắt dưới con trỏ. Hành động sửa nhãn đi qua `edit_command` (QC, việc nền).
+        "outside"/"occluded" với iid `pt:<id>[@layer]` (nút nhỏ của dòng điểm trong DETAILS): `selection_set(iid)` chọn đúng điểm của đúng người,
+        rồi `toggle_flag` dùng "điểm đang chọn trong panel" (hover đã bỏ) nên chỉ cờ của điểm đó đổi."""
+        if action == "open":                                       # DETAILS của một thẻ vừa mở/đóng: nút mở/thu tất cả theo kịp
+            self._sync_object_header()
+            return
+        if not self.s or not self.tree.exists(iid):
+            return
+        self.hover = None
+        if action == "menu":                                       # widget đã chọn dòng (thẻ hoặc điểm) và đặt toạ độ menu
+            x, y = self.tree.menu_xy or (self.root.winfo_pointerx(), self.root.winfo_pointery())
+            self.popup_obj_menu(x, y)
+            return
+        new_label = self.tree.label_of(iid) if action == "label" else None      # đọc trước khi làm mới (làm mới đưa ô label về dữ liệu)
+        if self.tree.selection() != (iid,):
+            self.tree.selection_set(iid)                           # on_select chạy ngay: chuyển sang người của thẻ
+        self._selected()                                           # chắc chắn đúng người kể cả khi lựa chọn không đổi
+        if action == "label":
+            if new_label and new_label != iid.partition(":")[2].partition("@")[0]:
+                self.swap_labels()
+            self.canvas.focus_set()                                # trả phím tắt cho ảnh (ô chọn label không giữ focus)
+            return
+        fn = {"first": self.first_keyframe, "prev": lambda: self.jump_pin(-1), "next": lambda: self.jump_pin(1),
+              "last": self.last_keyframe, "outside": lambda: self.toggle_flag("outside"),
+              "occluded": lambda: self.toggle_flag("occluded"), "lock": self.toggle_lock, "hidden": self.toggle_eye_hidden,
+              "keyframe": self.toggle_pin_here, "pinned": self.toggle_pinned, "focus": self.focus_object}.get(action)
+        if fn is not None:
+            fn()
+
+    def _on_card_hover(self, iid: str | None) -> None:
+        """Con trỏ vào/ra một thẻ: thẻ sáng lên (activated) và mắt của nó trên ảnh vẽ đậm (spec 4.2)."""
+        self._card_hover = iid
+        self.tree.activate(iid, scroll=False)
+        self._motion_refresh(thumbs=False)                 # chỉ nét đậm của mắt đổi: không tính lại ảnh thu nhỏ, dải thời gian
+
+    def _active_label(self) -> str | None:
+        """Mắt (của người đang chọn) có thẻ đang được trỏ chuột trong panel."""
+        iid = self._card_hover
+        if not (self.s and iid and iid.startswith("eye:")):
+            return None
+        label, _, layer = iid[4:].partition("@")
+        return label if int(layer or 0) == self.s.cur else None
+
+    def set_neighbors_tab(self, on: bool) -> None:
+        """Bật/tắt tab "Frame lân cận" (Cài đặt > Workspace): tắt thì gỡ tab khỏi panel và không tính ảnh thu nhỏ nữa."""
+        on = bool(on)
+        self.settings["workspace"]["show_neighbors"] = on
+        self.save_settings()
+        if on == self._neighbors_on:
+            return
+        self._neighbors_on = on
+        if on:
+            self.side.add(self.neighbors_tab, text="Frame lân cận")
+            if self.s and self.view is not None:
+                self._schedule_thumbs()                    # qua `_thumbs_tick`: lỗi đọc frame từ CVAT thành thông báo, không lọt ra Tk
+        else:
+            self.side.forget(self.neighbors_tab)
+
     def _on_tree_select(self, _=None):
         """Chọn dòng của bộ đối tượng khác thì chuyển sang bộ đó (mọi thao tác sau đó tác động lên đối tượng vừa chọn)."""
         sel = self.tree.selection()
@@ -1549,18 +1756,21 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.refresh(light=True)
 
     def _pick_layer(self, sx: float, sy: float) -> None:
-        """Bấm trúng mắt của bộ đối tượng khác (và không trúng mắt nào của bộ đang chọn) thì chuyển sang bộ đó."""
+        """Bấm trúng mắt ĐANG HIỆN của bộ đối tượng khác (và không trúng mắt hiện nào của bộ đang chọn) thì chuyển sang bộ đó. Mắt ẩn (riêng,
+        theo label ở tab Labels) không được tính: bấm vào chỗ trống trên ảnh không được chọn người khác qua một mắt người dùng không thấy."""
         s = self.s
         if len(s.layers) < 2 or self.pinning or self.hide_labels:
             return
-        if self._nearest_pin_point((sx, sy)) is not None or self._eye_at((sx, sy)) is not None:
+        hit_at = lambda: (self._nearest_pin_point((sx, sy), visible_only=True) is not None
+                          or self._eye_at((sx, sy), visible_only=True) is not None)
+        if hit_at():
             return
         for i in range(len(s.layers)):
             if i == s.cur:
                 continue
             with s.layer_ctx(i):
-                hit = self._nearest_pin_point((sx, sy)) is not None or self._eye_at((sx, sy)) is not None
-                label = self._eye_at((sx, sy))
+                hit = hit_at()
+                label = self._eye_at((sx, sy), visible_only=True)
             if hit:
                 s.select_layer(i)
                 iid = self._iid("eye", label or "mattrai", i)       # chọn dòng của mắt vừa bấm để phần chọn trong panel khớp với bộ mới
@@ -1585,7 +1795,11 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         return next(l for l, sp in EYES.items() if pid in sp.ids), pid
 
     def toggle_lock(self):
-        label, _ = self._selected()
+        """Phím l và nút Lock trên thẻ: khoá / mở khoá MỘT mắt của người đang chọn. Như `delete_label` và phím h (spec 7b.3): mắt ĐANG HIỆN
+        dưới con trỏ chuột được xử lý trước; không trỏ vào mắt hiện nào thì dùng mắt đang chọn trong panel."""
+        self._cancel_drag()                              # giữa lúc kéo: huỷ kéo (B21), thả chuột sau đó không sửa mắt vừa khoá / ẩn / Pinned
+        label = self._eye_under_pointer()
+        label = label or self._selected()[0]
         if label is None:
             self.notice = "Chọn một mắt trong panel Đối tượng trước."
         elif label in self.locked:
@@ -1596,22 +1810,53 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             self.notice = f"Đã khoá {label}: không kéo được."
         self.refresh()
 
+    def _obj_hidden(self, layer: int, label: str) -> bool:
+        """Mắt (người `layer`, `label`) đang ẩn: ẩn riêng đối tượng này, hoặc label đang ẩn cho mọi người (tab Labels, phím H của panel)."""
+        return (layer, label) in self.hidden_objs or not self.look.eyes.get(label, True)
+
     def toggle_eye_hidden(self):
-        label, _ = self._selected()
-        if label is None:
-            self.notice = "Chọn một mắt trong panel Đối tượng trước."
+        """Phím h và nút Hidden ở thẻ đối tượng (như CVAT): ẩn / hiện MỘT mắt của MỘT người. Như `delete_label`: mắt ĐANG HIỆN dưới con trỏ
+        chuột được xử lý trước; không trỏ vào mắt hiện nào thì dùng mắt đang chọn trong panel (mắt đã ẩn được hiện lại qua thẻ của nó).
+        Ẩn mắt dưới con trỏ thì chọn luôn thẻ của nó (cùng người: `_eye_under_pointer` chỉ xét người đang chọn): mắt ẩn không còn "dưới
+        con trỏ", nên lần h kế tiếp rơi về thẻ đang chọn và hiện lại đúng mắt này như thông báo nói (B01).
+        Ẩn label cho mọi người là nút Hidden ở tab Labels; khi label đang ẩn ở đó thì nút Hidden của thẻ mờ và ở đây chỉ báo lý do
+        (đổi trạng thái riêng lúc ấy không thấy gì, rồi để mắt ẩn mãi sau khi hiện lại label)."""
+        self._cancel_drag()                              # giữa lúc kéo: huỷ kéo (B21), thả chuột sau đó không sửa mắt vừa khoá / ẩn / Pinned
+        under = self._eye_under_pointer()
+        label = under or self._sel_eye()
+        if not label:
+            return
+        if not self.look.eyes.get(label, True):
+            self.notice = f"Label {label} đang ẩn cho mọi đối tượng (tab Labels hoặc nút ẩn tất cả): hiện label đó trước."
             self.refresh()
             return
-        self._layer_vars[label].set(not self.look.eyes[label])
-        self.set_layer(label)
+        key = (self.s.cur, label)
+        if key in self.hidden_objs:
+            self.hidden_objs.discard(key)
+            self.notice = f"Đã hiện {label}."
+        else:
+            self.hidden_objs.add(key)
+            if under:
+                self.select_eye(label, quiet=True)
+            self.notice = f"Đã ẩn {label} (chỉ đối tượng này; bấm {self.kl('hide')} lần nữa để hiện)."
+        self.refresh()
 
     def refresh_objects(self):
-        keep = self.tree.selection()
-        open_ = {i: self.tree.item(i, "open") for i in self.tree.get_children()}
-        self.tree.delete(*self.tree.get_children())
-        if not self.s:
-            return
+        """Làm mới danh sách thẻ. Trong một đợt `begin_update`/`end_update`: cùng dãy đối tượng thì widget được cập nhật tại chỗ (không dựng lại
+        thẻ khi phát hay kéo), lựa chọn và DETAILS đang mở được giữ, `on_select` không chạy giữa chừng."""
+        tree = self.tree
+        tree.begin_update()
+        try:
+            tree.delete(*tree.get_children())
+            if self.s:
+                self._fill_objects()
+        finally:
+            tree.end_update()
+        self._sync_object_header()
+
+    def _fill_objects(self):
         s = self.s
+        # không cần dọn trạng thái ẩn / khoá / Pinned của người đã bỏ: chúng gắn mã mắt (`_eye_key`), người mới luôn nhận mã mới (B09)
         rows = self._object_rows()
         self.items_var.set(f"Items: {len(rows)}")
         for layer, label in rows:
@@ -1623,44 +1868,27 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
                 star = "★" if self.f in keys else "☆"                     # ngôi sao đặc = frame này là keyframe của riêng đối tượng đó
                 in_file = s.qc and (s.points_at(self.f) or {}).keys() >= set(EYES[label].ids)        # QC: nhãn đọc từ job, chưa có điểm ghim nào
                 src = "keyframe" if self.f in keys else ("tool tính" if self.f in s.labels and eye else ("từ file" if eye or in_file else "chưa có"))
+                file_pts = (s.points_at(self.f) or {}) if in_file else {}   # QC: điểm đọc từ job có thật dù chưa có ghim (không phải "—")
                 n = s.obj_ids.get(label)
                 gone = bool(s.pins) and eye is None
-                mark = ("[khoá] " if label in self.locked else "") + ("[pinned] " if label in self.pinned_eyes else "") + ("[ẩn] " if not self.look.eyes[label] else "")
+                locked, pinned, hidden = label in self.locked, label in self.pinned_eyes, self._obj_hidden(layer, label)
+                mark = ("[khoá] " if locked else "") + ("[pinned] " if pinned else "") + ("[ẩn] " if hidden else "")
+            on = lambda kind: bool(pts) and all(flags.get(i) == kind for i in EYES[label].ids)     # cờ của cả đối tượng: cả 8 điểm
+            b, g, r = self.look.color_of(label, (n or list(EYES).index(label) + 1) - 1)
+            card = {"id": n, "label": label, "color": f"#{int(r):02x}{int(g):02x}{int(b):02x}", "type": "SKELETON TRACK",
+                    "status": "đã xoá" if gone else src, "outside": on("outside") and eye is not None,
+                    "occluded": on("occluded") and eye is not None, "lock": locked, "hidden": hidden,
+                    "label_hidden": not self.look.eyes.get(label, True), "keyframe": self.f in keys,
+                    "pinned": pinned, "has_first": bool(keys) and keys[0] != self.f, "has_last": bool(keys) and keys[-1] != self.f,
+                    "has_prev": any(k < self.f for k in keys), "has_next": any(k > self.f for k in keys)}
             eid = self._iid("eye", label, layer)
             self.tree.insert("", "end", iid=eid, text=(f"#{n}  " if n else "") + f"{mark}{label}" + ("  (không có nhãn)" if gone else ""),
-                             values=("skeleton track", star, "đã xoá" if gone else src), open=open_.get(eid, False))
+                             values=("skeleton track", star, "đã xoá" if gone else src), card=card)
             for pid in EYES[label].ids:
                 k = flags.get(pid)
-                state = {"occluded": "Occluded", "outside": "Outside"}.get(k, "" if pts and pid in pts else "—")
+                state = {"occluded": "Occluded", "outside": "Outside"}.get(k, "" if (pts and pid in pts) or pid in file_pts else "—")
                 self.tree.insert(eid, "end", iid=self._iid("pt", pid, layer), text=f"điểm {pid}",
                                  values=("ghim" if pid in PIN_IDS else "suy ra", star, state))
-        for i in keep:
-            if self.tree.exists(i):
-                self.tree.selection_set(i)
-
-    @net_safe
-    def on_tree_click(self, e):
-        """Bấm vào ngôi sao trong panel Đối tượng = ghim / bỏ ghim keyframe tại frame hiện tại (như nút ngôi sao của CVAT)."""
-        if self.tree.identify_region(e.x, e.y) == "cell" and self.tree.identify_column(e.x) == "#2" and self.s:
-            if self._edit_blocked():                                  # QC hoặc đang có việc nền: bấm ★ cũng là sửa nhãn
-                return "break"
-            try:
-                row = self.tree.identify_row(e.y)
-                lab = None
-                layer = int(row.partition("@")[2] or 0) if row else 0
-                if layer != self.s.cur and layer < len(self.s.layers):
-                    self.s.select_layer(layer)
-                if row.startswith("eye:"):
-                    lab = row.split(":")[1].partition("@")[0]
-                elif row.startswith("pt:"):
-                    pid = int(row.split(":")[1].partition("@")[0])
-                    lab = next(l for l, sp in EYES.items() if pid in sp.ids)
-                on = self.s.toggle_eye_key(lab, self.f) if lab else self.s.toggle_pin_here(self.f)
-                self.notice = "Đã ghim frame này (keyframe ★)." if on else "Đã bỏ keyframe ở frame này."
-            except ValueError as err:
-                self.notice = str(err)
-            self.refresh()
-            return "break"
 
     def hover_on_point(self) -> bool:
         return bool(self.hover and self.view and self.s and self._current_points() and self._nearest_pin_point(self.hover) is not None)
@@ -1698,8 +1926,11 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.turn_bar.place_forget()
 
     def on_leave(self, _e=None):
-        """Chuột rời khung ảnh: quên vị trí cũ, để phím Q/O và nút ở panel dùng phần đang chọn chứ không dùng một điểm cũ trên ảnh."""
+        """Chuột rời khung ảnh: quên vị trí cũ, để phím Q/O và nút ở panel dùng phần đang chọn chứ không dùng một điểm cũ trên ảnh.
+        Thẻ đang sáng vì con trỏ ở trên mắt của nó thôi sáng."""
         self.hover = None
+        if self._card_hover is None:
+            self.tree.activate(None)
 
     @edit_command
     def toggle_flag(self, kind: str):
@@ -1713,7 +1944,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             return
         name = {"occluded": "Occluded", "outside": "Outside"}[kind]
         label, sel_pid = self._selected()
-        pid = self._nearest_pin_point(self.hover) if self.hover and self.view and self._current_points() else None
+        # chỉ điểm của mắt đang hiện: điểm ẩn dưới con trỏ thì người dùng không thấy, không được đánh cờ nó
+        pid = self._nearest_pin_point(self.hover, visible_only=True) if self.hover and self.view and self._current_points() else None
         pid = pid if pid is not None else sel_pid
         target = next((l for l, sp in EYES.items() if pid in sp.ids), None) if pid is not None else label
         if target is None:
@@ -1737,15 +1969,24 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
     def _current_points(self):
         return self.s.labels[self.f].points if self.f in self.s.labels else self.s.pins.get(self.f)
 
-    def _eye_at(self, screen_xy):
-        """Mắt (nhãn) nằm dưới con trỏ: bên trong hoặc sát đường viền (trong 14 px màn hình)."""
+    def _eye_visible(self, label: str) -> bool:
+        """Mắt `label` của người đang chọn đang hiện trên ảnh: không ẩn mọi nhãn (H), không ẩn label (tab Labels), không ẩn riêng."""
+        return not self.hide_labels and not self._obj_hidden(self.s.cur, label)
+
+    def _eye_under_pointer(self) -> str | None:
+        """Mắt ĐANG HIỆN của người đang chọn dưới con trỏ chuột trên ảnh (phím Del, h, l theo con trỏ); mắt ẩn coi như không có."""
+        return self._eye_at(self.hover, visible_only=True) if self.s and self.hover and self.view else None
+
+    def _eye_at(self, screen_xy, visible_only: bool = False):
+        """Mắt (nhãn) nằm dưới con trỏ: bên trong hoặc sát đường viền (trong 14 px màn hình). `visible_only`: bỏ qua mắt đang ẩn
+        (người dùng không thấy nó nên phím theo con trỏ không được tác động lên nó)."""
         pts = self._current_points()
         if not pts:
             return None
         p = self.view.to_frame(*screen_xy)
         best = None
         for label, spec in EYES.items():
-            if not all(i in pts for i in spec.ids):
+            if not all(i in pts for i in spec.ids) or (visible_only and not self._eye_visible(label)):
                 continue
             poly = np.array([pts[i] for i in spec.ids], np.float32).reshape(-1, 1, 2)
             d = cv2.pointPolygonTest(poly, (float(p[0]), float(p[1])), True) * self.view.k      # >0 bên trong (px màn hình)
@@ -1760,9 +2001,13 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         dx, dy = b[0] - a[0], b[1] - a[1]
         return {i: (pts[i][0] + dx, pts[i][1] + dy) for i in EYES[label].ids}
 
-    def _nearest_pin_point(self, screen_xy, radius: float = 14):
+    def _nearest_pin_point(self, screen_xy, radius: float = 14, visible_only: bool = False):
+        """Điểm gần con trỏ nhất (trong `radius` px màn hình). `visible_only`: chỉ xét điểm của mắt đang hiện."""
         p = self.view.to_frame(*screen_xy)
         pts = self.s.labels[self.f].points if self.f in self.s.labels else self.s.pins.get(self.f)
+        if pts and visible_only:
+            shown = {i for l, sp in EYES.items() if self._eye_visible(l) for i in sp.ids}
+            pts = {i: q for i, q in pts.items() if i in shown}
         if not pts:
             return None
         pid, q = min(pts.items(), key=lambda kv: (kv[1][0] - p[0]) ** 2 + (kv[1][1] - p[1]) ** 2)
@@ -1830,6 +2075,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
 
     def toggle_labels(self):
         """Ẩn/hiện toàn bộ nhãn để nhìn rõ ảnh (như phím H của CVAT). Khi ẩn, không kéo hay đánh cờ được điểm."""
+        self._cancel_drag()                              # giữa lúc kéo: huỷ kéo (B21), thả chuột sau đó không sửa mắt vừa khoá / ẩn / Pinned
         self.hide_labels = not self.hide_labels
         self.eye_btn.set_icon("eye_off" if self.hide_labels else "eye")
         self.eye_btn.set_active(self.hide_labels)
@@ -1903,13 +2149,18 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
 
     # ---- chuột trên khung chính ----
     def on_hover(self, e):
+        """Chuột di trên ảnh: nhớ vị trí (phím Del, h, l, q, o theo con trỏ) và làm sáng thẻ của mắt dưới con trỏ (CVAT "activated"),
+        cuộn danh sách tới thẻ đó nếu nó khuất. Chỉ mắt đang hiện của người đang chọn."""
         e = self._unrot(e)
         self.hover = (e.x, e.y)
+        label = self._eye_at(self.hover, visible_only=True) if self.s and self.view is not None else None
+        self.tree.activate(self._iid("eye", label) if label else None)
 
     @net_safe
     def on_press(self, e):
         e = self._unrot(e)
         self._m0 = (e.x, e.y)
+        self._manual0 = self.manual
         if not self.s or self.view is None:
             return
         self.canvas.focus_set()
@@ -1966,12 +2217,20 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
                 self.notice = "Mắt này đang bị khoá; mở khoá trong panel Đối tượng."
                 self.refresh()
                 return
+            if pid is not None and any(pid in EYES[l].ids and self._obj_hidden(self.s.cur, l) for l in EYES):
+                self.notice = "Mắt này đang ẩn; hiện lại rồi hãy kéo."
+                self.refresh()
+                return
             if pid is not None:
                 self.select_eye(next(l for l, sp in EYES.items() if pid in sp.ids), quiet=True)
                 self.manual = self.view            # giữ nguyên khung nhìn trong lúc kéo
                 self.drag = (pid, p)
                 return
             label = self._eye_at((e.x, e.y))
+            if label is not None and self._obj_hidden(self.s.cur, label):
+                self.notice = "Mắt này đang ẩn; hiện lại rồi hãy kéo."
+                self.refresh()
+                return
             if label in self.pinned_eyes:
                 self.notice = "Mắt này đang Pinned: chỉ kéo từng điểm được (bỏ Pinned trong menu ⋮)."
                 self.refresh()
@@ -1988,14 +2247,18 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self._pan = (e.x, e.y)
         self._left_pan = True
 
-    def _motion_refresh(self):
-        """Gộp các sự kiện kéo chuột dồn dập: mỗi lượt rảnh chỉ vẽ lại một lần (tránh hàng đợi sự kiện làm cửa sổ bị trễ)."""
+    def _motion_refresh(self, thumbs: bool = True):
+        """Gộp các sự kiện kéo chuột dồn dập: mỗi lượt rảnh chỉ vẽ lại một lần (tránh hàng đợi sự kiện làm cửa sổ bị trễ).
+        `thumbs=False` (con trỏ vào/ra thẻ, chỉ đổi độ đậm của một mắt): không hẹn vẽ lại ảnh thu nhỏ và dải thời gian; nếu trong cùng
+        lượt có thao tác khác cần chúng thì lần vẽ gộp vẫn hẹn."""
+        self._motion_thumbs = getattr(self, "_motion_thumbs", False) or thumbs
         if getattr(self, "_motion_job", None) is None:
             self._motion_job = self.root.after_idle(self._motion_draw)
 
     def _motion_draw(self):
         self._motion_job = None
-        self.refresh(light=True)
+        thumbs, self._motion_thumbs = getattr(self, "_motion_thumbs", True), False
+        self.refresh(light=True, thumbs=thumbs)
 
     def on_motion(self, e):
         e = self._unrot(e)
@@ -2030,8 +2293,12 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
 
     @net_safe
     def on_release(self, e):
-        e = self._scaled(self._unrot(e))
-        self._m0 = None
+        raw = self._unrot(e)                                           # con trỏ thật, chưa nhân độ nhạy
+        e = self._scaled(raw)
+        m0, self._m0 = self._m0, None
+        # nhấn rồi thả gần như không dời: chỉ chọn, không ghim. Đo trên con trỏ THẬT (px màn hình, chưa nhân độ nhạy, chưa đổi ra toạ độ ảnh): đo sau khi
+        # nhân độ nhạy thì độ nhạy < 1 làm lần chỉnh tinh bị coi là chỉ bấm và bỏ mất (B27)
+        still = m0 is not None and math.hypot(raw.x - m0[0], raw.y - m0[1]) < DRAG_MIN_PX
         self._left_pan = False
         if self.pinning == "drawbox" and self._box0 is not None and self.view:
             p, a = self.view.to_frame(e.x, e.y), self._box0
@@ -2072,32 +2339,54 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         if self.drag_eye and self.s:
             new = self._eye_shift()
             self.drag_eye = None
-            try:
-                newly = self.s.drag_points(self.f, new)
-                self.notice = "Đã dời cả mắt." + (" Frame này đã tự thành frame ghim." if newly else "")
-            except ValueError as err:
-                self.notice = str(err)
+            if not still:
+                try:
+                    newly = self.s.drag_points(self.f, new)
+                    self.notice = "Đã dời cả mắt." + (" Frame này đã tự thành frame ghim." if newly else "")
+                except ValueError as err:
+                    self.notice = str(err)
             self.refresh()
         if self.drag and self.s:
             pid, p = self.drag
             self.drag = None
-            try:
-                newly = self.s.drag_point(self.f, pid, p)
-                if newly:
-                    self.notice = "Frame này đã tự thành frame ghim; các frame sau tính lại theo điểm vừa kéo."
-            except ValueError as err:
-                self.notice = str(err)
+            if not still:
+                try:
+                    newly = self.s.drag_point(self.f, pid, p)
+                    if newly:
+                        self.notice = "Frame này đã tự thành frame ghim; các frame sau tính lại theo điểm vừa kéo."
+                except ValueError as err:
+                    self.notice = str(err)
             self.refresh()
 
+    def _cancel_drag(self, why: str = "") -> bool:
+        """Huỷ lần kéo chuột đang dở trên ảnh (một điểm, cả mắt, tay cầm xoay, tay cầm đổi kích thước, điểm của mắt vẽ dở, khung vẽ mắt), như CVAT:
+        không ghim, không thêm bước hoàn tác, nhãn và khung nhìn như trước khi bấm (kéo không đổi con trỏ chuột nên không có gì phải trả).
+        Lần kéo gắn với frame, người và nhãn lúc bấm, nên phải huỷ khi chúng đổi giữa lúc kéo: đổi frame (`go`, nhịp phát), lệnh sửa nhãn bằng
+        phím (`edit_command`: Ctrl+Z, Del, Ctrl+N...), mở thư mục / job khác. Để lại thì lần vẽ sau tính phần xem trước trên frame mới
+        ('NoneType'.items, kẹt kéo: lỗi B05) và thả chuột ghim ngầm frame mới. Sự kiện kéo / thả tới sau khi huỷ không làm gì. True nếu có huỷ."""
+        label_drag = any(d is not None for d in (self.drag, self.drag_eye, self.drag_rot, self.drag_resize))
+        if not (label_drag or self.draft_drag is not None or self._box0 is not None):
+            return False
+        if label_drag:
+            self.manual = self._manual0                  # lúc bấm, khung nhìn bị giữ cố định để kéo (`manual = view`)
+        if self._box0 is not None:
+            self.draft = None                            # mắt mẫu đang dựng theo khung kéo dở
+        self.drag = self.drag_eye = self.drag_rot = self.drag_resize = None
+        self.draft_drag = self._box0 = self._m0 = None
+        if why:
+            self.notice = f"Đã huỷ thao tác kéo dở (chưa thả chuột) vì {why}."
+        return True
+
     # ---- vẽ ----
-    def refresh(self, light: bool = False):
-        """Vẽ lại cửa sổ. Nguồn CVAT đọc frame qua mạng ngay trong lúc vẽ: lỗi mạng hoặc hết hạn đăng nhập thành thông báo / hộp đăng nhập, không ném ra Tk."""
+    def refresh(self, light: bool = False, thumbs: bool = True):
+        """Vẽ lại cửa sổ. Nguồn CVAT đọc frame qua mạng ngay trong lúc vẽ: lỗi mạng hoặc hết hạn đăng nhập thành thông báo / hộp đăng nhập, không ném ra Tk.
+        `thumbs=False` chỉ có nghĩa khi `light`: không hẹn vẽ lại ảnh thu nhỏ và dải thời gian (rê chuột trên thẻ)."""
         try:
-            self._refresh(light)
+            self._refresh(light, thumbs)
         except CvatError as err:
             self._frame_read_failed(err)
 
-    def _refresh(self, light: bool = False):
+    def _refresh(self, light: bool = False, thumbs: bool = True):
         if not self.s:
             return
         s = self.s
@@ -2128,8 +2417,11 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             self._main = to_photo(self._base_rot)
             self.canvas.itemconfigure(self._base_item, image=self._main)
             self._base_key = key
+        sel = self._selected()[0]
+        active = self._active_label()                 # con trỏ ở trên thẻ của mắt này: vẽ đậm, và nó là mắt "đang chọn" khi vẽ (độ đặc riêng)
         kw = dict(clicks=self.clicks, override=override, show_ids=self.show_ids, hide_labels=self.hide_labels, look=look,
-                  preview=self._preview_pts(), handle=self._handle_arg(), selected=self._selected()[0], ids=s.obj_ids)
+                  preview=self._preview_pts(), handle=self._handle_arg(), selected=active or sel, ids=s.obj_ids,
+                  hidden=frozenset(self.hidden_objs), active=active)
         self.canvas.delete(CanvasPainter.TAG)
         if look.opacity >= 0.999 and look.selected_opacity >= 0.999:
             # nhãn là đối tượng vector của Canvas: không vẽ lại ảnh, không đổ ảnh vào Tk (nhanh như nhau ở mọi cỡ khung)
@@ -2181,17 +2473,33 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
         self.status.set(text)
         if not self._typing():
             self._sync_entry()
+        self._sync_panel(force=not light)
         if not light:
-            self.refresh_objects()
             self.refresh_labels_tab()
             self.update_name_row()
         if light:
+            if not thumbs:                                # chỉ đổi nét đậm của một mắt (rê chuột trên thẻ): frame, nhãn không đổi
+                return
             self._schedule_thumbs()                       # ảnh thu nhỏ và dải thời gian cập nhật sau khi ngừng thao tác một chút
             if self.playing:
                 self._update_timeline()
             return
         self._update_thumbs()
         self._update_timeline()
+
+    def _sync_panel(self, force: bool = False) -> None:
+        """Thẻ đối tượng và nút ★ ở thanh trái theo frame, người và lựa chọn hiện tại. Vẽ đầy đủ thì luôn làm; vẽ nhẹ (mỗi frame khi phát,
+        đổi lựa chọn, kéo điểm, dời ảnh) chỉ làm khi frame / người / lựa chọn đổi. Thẻ được cập nhật tại chỗ (cùng dãy iid: không dựng lại,
+        khoảng 1 ms). Sửa nhãn luôn đi qua vẽ đầy đủ nên không cần dò thay đổi dữ liệu ở đây."""
+        key = (id(self.s), self.f, self.s.cur, self.tree.selection())
+        if not force and key == self._panel_key:
+            return
+        self._panel_key = key                    # đặt trước: refresh_objects có thể gọi lồng (on_select → vẽ nhẹ) và lần lồng thấy khoá trùng
+        self.refresh_objects()
+        star = "star" if self.f in self._key_frames() else "star_off"          # StarFilled khi frame này là keyframe (mắt đang chọn / cả job)
+        if self.kf_btn.name != star:
+            self.kf_btn.set_icon(star)
+        self._panel_key = (id(self.s), self.f, self.s.cur, self.tree.selection())   # `_key_frames` có thể đã chuyển người
 
     def _paint_patch(self, img):
         """Chỉ gửi cho Tk vùng ảnh khác với ảnh nền (thường là quanh hai mắt) thay vì cả khung: gửi cả khung tốn khoảng 16 ms mỗi lần vẽ."""
@@ -2225,9 +2533,13 @@ class App(ObjectsMixin, FramesMixin, CvatMixin):
             self._update_timeline()
 
     def _update_thumbs(self):
+        """Ảnh thu nhỏ frame trước/sau ở tab "Frame lân cận"; tab đang tắt thì không tính (đỡ tốn CPU khi phát)."""
+        if not self._neighbors_on:
+            return
         s = self.s
+        hidden = frozenset(self.hidden_objs)
         for var, widget, g in ((self.c_prev, self.t_prev, self.f - 1), (self.c_next, self.t_next, self.f + 1)):
-            th = render_thumb(s, g, self.view, THUMB, self.hide_labels, self.look)
+            th = render_thumb(s, g, self.view, THUMB, self.hide_labels, self.look, hidden=hidden)
             if th is not None and self.rot:
                 th = np.ascontiguousarray(np.rot90(th, -self.rot))
             if th is None:
@@ -2259,8 +2571,12 @@ def run(frames_dir: str | None, xml: str | None, selftest: bool = False, pins: s
             print(f"Lỗi: file ghim {pins} phải là một đối tượng JSON {{frame: {{id: [x, y]}}}}")
             return 2
     root = tk.Tk()
+    if not frames_dir and not selftest:                  # cửa trước: màn đăng nhập (--cvat điền sẵn địa chỉ; --job tự mở job đó sau khi đăng nhập); "làm việc không cần CVAT" vào cửa sổ trống
+        FrontDoor(root, url=cvat, job=job)
+        root.mainloop()
+        return 0
     app = App(root)
-    if cvat:                                             # --cvat [--job]: hộp đăng nhập (hỏi mật khẩu trong cửa sổ); có --job thì tự mở job đó sau khi đăng nhập
+    if cvat:                                             # --cvat [--job] kèm --selftest: hộp đăng nhập cũ (hỏi mật khẩu trong cửa sổ); có --job thì tự mở job đó sau khi đăng nhập
         app.open_cvat(url=cvat, job=job)
     elif frames_dir:
         try:

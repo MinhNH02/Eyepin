@@ -460,8 +460,10 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(app.s.flags[10][17], "occluded")
         # ẩn mắt qua panel
         app.tree.selection_set("eye:matphai")
-        app.toggle_eye_hidden()
-        self.assertFalse(app.look.eyes["matphai"])
+        app.hover = None
+        app.toggle_eye_hidden()                                     # Hidden trên thẻ chỉ ẩn đối tượng này (spec 7b.3), không đổi look.eyes
+        self.assertIn((0, "matphai"), app.hidden_objs)
+        self.assertTrue(app.look.eyes["matphai"])
 
     def test_keymap_is_cvat_like_and_rebindable(self):
         from eyepin import shortcuts as sc
@@ -537,8 +539,10 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(app._selected()[0], "matphai")
         app.handlers["label_mattrai"](None)
         self.assertEqual(app._selected()[0], "mattrai")
+        app.hover = None
         app.handlers["hide"](None)
-        self.assertFalse(app.look.eyes["mattrai"])
+        self.assertIn((0, "mattrai"), app.hidden_objs)              # phím h ẩn một đối tượng (spec 7b.3), không đổi look.eyes
+        self.assertTrue(app.look.eyes["mattrai"])
         app.handlers["lock_all"](None)
         self.assertEqual(app.locked, {"mattrai", "matphai"})
 

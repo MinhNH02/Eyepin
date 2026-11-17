@@ -14,7 +14,8 @@ IMAGE_EXT = (".jpg", ".jpeg", ".png", ".bmp")
 
 
 class DirSource:
-    """Thư mục ảnh rời, sắp theo tên: cách mở cũ của EyePin."""
+    """Thư mục ảnh rời, sắp theo tên theo CHUỖI (`10.png` đứng trước `2.png`), đúng như CVAT (`sorting_method: lexicographical`, cũng là mặc định).
+    Số frame trong file XML / file import tính theo thứ tự đó nên KHÔNG sắp tự nhiên: tên không đệm số 0 sẽ lệch frame so với CVAT (lỗi B25)."""
 
     def __init__(self, folder: str):
         self.folder = folder
@@ -22,6 +23,8 @@ class DirSource:
         if not self.names:
             raise ValueError(f"Không có ảnh trong {folder}")
         first = cv2.imread(os.path.join(folder, self.names[0]))
+        if first is None:
+            raise ValueError(f"Không đọc được ảnh {self.names[0]} trong {folder} (file hỏng hoặc không phải ảnh)")
         self.height, self.width = first.shape[:2]
         self.deleted: set[int] = set()
         self.key = os.path.abspath(folder).lower()

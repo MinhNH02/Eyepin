@@ -3,11 +3,14 @@
 Luồng: mở thư mục ảnh (và file nhãn nếu có) → ghim 4 điểm mỗi mắt ở các frame cần ghim → tool suy 8 điểm, bám theo ảnh
 tiến về phía sau → quét → xuất file import chứa mọi nhãn của job.
 
-Ghi chú về phạm vi lát này: một frame ghim cần ghim đủ cả hai mắt (phép bám dời hai mắt cùng lúc).
+Một frame ghim có thể chỉ chứa một mắt (ghim từng mắt: `pin_eye`, `add_pin_one`; nạp file `--pins`: `load_pins`); bộ bám đi riêng từng mắt.
 """
 from __future__ import annotations
 
 import copy
+import itertools
+import math
+import numbers
 import os
 import time
 from contextlib import contextmanager
@@ -32,6 +35,8 @@ MATCH_FLAG = 0.85           # độ khớp dưới mức này thì đánh dấu 
 
 QC_MSG = "Job đã có nhãn mắt: đang ở chế độ QC. Muốn sửa thì bấm 'Xoá nhãn mắt cũ và gán lại'."
 
+_EYE_UIDS = itertools.count(1)     # mã nội bộ của từng mắt (Layer.eye_uid): tăng mãi, không dùng lại, kể cả giữa các phiên
+
 
 def empty_annotations() -> Annotations:
     root = ET.Element("annotations")
@@ -53,6 +58,9 @@ class Layer:
         self.need_pin: list[int] = []
         self.obj_ids: dict[str, int] = {}                           # nhãn mắt -> ID đối tượng
         self.segments: dict = {}                                    # đoạn bám đã tính (bộ nhớ đệm)
+        # nhãn mắt -> mã nội bộ ổn định của mắt (có cả khi chưa có ID). Giao diện gắn ẩn riêng / khoá / Pinned vào mã này nên chúng đi
+        # theo đúng mắt khi chỉ số người dịch (xoá người giữa), khi đổi label và khi hoàn tác / làm lại (mã nằm trong bản chụp hoàn tác).
+        self.eye_uid: dict[str, int] = {l: next(_EYE_UIDS) for l in EYES}
 
 
 def _layer_attr(name: str):
@@ -69,6 +77,7 @@ class Session:
     arrival = _layer_attr("arrival")
     need_pin = _layer_attr("need_pin")
     obj_ids = _layer_attr("obj_ids")
+    eye_uid = _layer_attr("eye_uid")
     _segments = _layer_attr("segments")
 
     def __init__(self, frames_dir: str | None = None, xml_path: str | None = None, *, source=None, ann: Annotations | None = None):
@@ -95,6 +104,7 @@ class Session:
         self.touched: dict[str, float] = {}                  # nhãn mắt -> lần sửa gần nhất (để sắp xếp theo thời gian cập nhật)
         self.deleted: set[int] = set(source.deleted)         # frame đã đánh dấu xoá (bỏ qua khi điều hướng, khôi phục được)
         self.dirty = False                                   # có thay đổi chưa lưu vào file phiên làm việc
+        self.unsent = False                                  # job CVAT: có thay đổi nhãn chưa gửi lên CVAT (khác `dirty`: lưu file phiên không phải là gửi); cvatsync.send xoá cờ khi gửi và đối chiếu khớp
         self.stale = False                                   # True: lần tính lại gần nhất lỗi (ví dụ mất kết nối CVAT), nhãn do tool tính có thể cũ; không lưu vào file phiên
         self._undo: list[dict] = []                          # bản chụp các điểm ghim trước mỗi thay đổi
         self._redo: list[dict] = []
@@ -155,12 +165,19 @@ class Session:
         return False
 
     def load_pins(self, data: dict) -> int:
-        """Ghim từ dữ liệu của file --pins: {"frame": {"id điểm": [x, y]}}; khoá bắt đầu bằng "_" là ghi chú và bị bỏ qua. Mắt nào có đủ 4 điểm ghim thì được
-        ghim, mắt không có điểm nào thì bỏ qua. Kiểm hết trước khi ghim: sai thì ném ValueError và không ghim gì. Trả số frame đã thành frame ghim."""
+        """Ghim từ dữ liệu của file --pins: {"frame": {"id điểm": [x, y]}}; khoá frame bắt đầu bằng "_" là ghi chú và bị bỏ qua.
+
+        Mắt có mặt trong một frame cần đủ 4 điểm ghim (mattrai 14, 16, 18, 20; matphai 22, 24, 26, 28); điểm suy ra (15, 17...) nếu có thì chỉ được
+        kiểm rồi bỏ, tool suy lại từ 4 điểm ghim. Frame chỉ có một mắt thì thành keyframe của riêng mắt đó, mắt kia ở frame đó giữ nguyên (như `pin_eye`).
+        Kiểm HẾT mọi frame trước khi đổi gì: frame là số nguyên trong phạm vi, không lặp, có ít nhất một mắt; id điểm thuộc 14–29; toạ độ là hai số
+        hữu hạn nằm trong ảnh (0..rộng, 0..cao, như luật "ngoài khung" của scan); hai khoé không trùng và 4 điểm giống một con mắt (`validate_four`).
+        Sai một chỗ thì ném ValueError tiếng Việt nêu frame, mắt, điểm và lý do, phiên không đổi gì (ghim, cờ, hoàn tác). Hợp lệ hết thì ghim mọi frame
+        trong MỘT bước hoàn tác rồi tính lại một lần. Trả số frame của file đã thành frame ghim."""
         self._guard_qc()
         if not isinstance(data, dict):
             raise ValueError("file ghim phải là một đối tượng JSON {frame: {id: [x, y]}}")
-        plan = []
+        owner = {i: label for label, spec in EYES.items() for i in spec.ids}
+        plan: dict[int, dict[str, dict[int, Point]]] = {}
         for k, d in data.items():
             if str(k).startswith("_"):
                 continue
@@ -170,19 +187,68 @@ class Session:
                 raise ValueError(f"khoá frame không phải số: {k!r}") from None
             if not 0 <= f < self.n_frames:
                 raise ValueError(f"frame {k} ngoài phạm vi 0–{self.n_frames - 1}")
-            try:
-                pts = {int(i): (float(v[0]), float(v[1])) for i, v in d.items()}
-            except (AttributeError, TypeError, ValueError, IndexError, KeyError):
-                raise ValueError(f"frame {k}: điểm ghim sai định dạng (cần {{id: [x, y]}})") from None
+            if f in plan:
+                raise ValueError(f"frame {f} xuất hiện hai lần trong file ghim (khoá {k!r})")
+            if not isinstance(d, dict):
+                raise ValueError(f"frame {k}: điểm ghim sai định dạng (cần {{id: [x, y]}})")
+            pts: dict[int, Point] = {}
+            for i, v in d.items():
+                try:
+                    pid = int(i)
+                except (TypeError, ValueError):
+                    raise ValueError(f"frame {k}: id điểm không phải số: {i!r}") from None
+                if pid not in owner:
+                    raise ValueError(f"frame {k}: id điểm {i} không thuộc mắt nào (mattrai 14–21, matphai 22–29)")
+                where = f"frame {k}, mắt {owner[pid]}, điểm {pid}"
+                if not (isinstance(v, (list, tuple)) and len(v) == 2
+                        and all(isinstance(c, numbers.Real) and not isinstance(c, bool) for c in v)):
+                    raise ValueError(f"{where}: toạ độ phải là hai số [x, y], đang là {v!r}")
+                try:
+                    x, y = float(v[0]), float(v[1])
+                except OverflowError:                                # số nguyên quá lớn cho float (JSON 1e400 viết không có dấu chấm)
+                    raise ValueError(f"{where}: toạ độ không hữu hạn (số quá lớn)") from None
+                if not (math.isfinite(x) and math.isfinite(y)):
+                    raise ValueError(f"{where}: toạ độ không hữu hạn ({v[0]}, {v[1]})")
+                if not (0 <= x <= self.width and 0 <= y <= self.height):
+                    raise ValueError(f"{where}: ({x:g}, {y:g}) nằm ngoài ảnh {self.width}×{self.height}")
+                pts[pid] = (x, y)
+            eyes: dict[str, dict[int, Point]] = {}
             for label, spec in EYES.items():
-                have = [i for i in spec.pins if i in pts]
-                if have and len(have) < len(spec.pins):
-                    raise ValueError(f"frame {k}: mắt {label} thiếu điểm ghim (cần {list(spec.pins)})")
-                if have:
-                    plan.append((f, label, {i: pts[i] for i in spec.pins}))
-        for f, label, four in sorted(plan, key=lambda t: (t[0], t[1])):
-            self.add_pin(f, label, four)
-        return len({f for f, _, _ in plan} & set(self.pins))
+                if not any(i in pts for i in spec.ids):
+                    continue                                         # frame không có mắt này: mắt này ở frame đó giữ nguyên
+                miss = [i for i in spec.pins if i not in pts]
+                if miss:
+                    raise ValueError(f"frame {k}, mắt {label}: thiếu điểm ghim {miss} (cần {list(spec.pins)})")
+                four = {i: pts[i] for i in spec.pins}
+                try:
+                    if math.dist(four[spec.first], four[spec.last]) < 1e-6:
+                        raise ValueError("hai khoé mắt trùng nhau")
+                    validate_four(spec, four)
+                except ValueError as err:
+                    raise ValueError(f"frame {k}, mắt {label}: {err}") from None
+                eyes[label] = derive(spec, four)
+            if not eyes:
+                raise ValueError(f"frame {k}: không có điểm ghim nào")
+            plan[f] = eyes
+        if not plan:
+            return 0
+        self._push_undo()                                            # cả file là một bước hoàn tác
+        now = time.time()
+        for f, eyes in sorted(plan.items()):
+            merged = dict(self.pins.get(f, {}))
+            for label, eye in eyes.items():
+                ids = EYES[label].ids
+                merged = {i: p for i, p in merged.items() if i not in ids}
+                merged.update(eye)
+                for store in (self.flags, self.estimates):          # cờ và ước lượng cũ của mắt này ở frame này không còn đúng (như pin_eye)
+                    if f in store:
+                        store[f] = {i: val for i, val in store[f].items() if i not in ids}
+                        if not store[f]:
+                            del store[f]
+                self.touched[label] = now
+            self.pins[f] = merged
+        self.recompute()
+        return len(plan)
 
     def add_pin_free(self, frame: int, clicks: list[Point]) -> dict[int, Point]:
         """Ghim từ 8 điểm bấm theo thứ tự tuỳ ý: tự chia hai mắt và gán vai trò từng điểm. Báo ValueError nếu không hợp lệ.
@@ -342,21 +408,39 @@ class Session:
         return self.drag_points(frame, {pid: xy})
 
     def drag_points(self, frame: int, new: dict[int, Point]) -> bool:
-        """Kéo thả điểm hoặc cả một mắt ở frame bất kỳ có nhãn do tool tính: frame đó tự thành frame ghim (nhận nguyên nhãn đang
-        hiển thị) rồi các điểm trong `new` được đặt vào toạ độ mới; các frame sau tính lại. Một bước hoàn tác.
-        Trả True nếu frame vừa được ghim."""
+        """Kéo thả điểm hoặc cả một mắt ở frame bất kỳ có nhãn do tool tính: mắt chứa các điểm trong `new` mà chưa là keyframe ở frame đó thì
+        thành keyframe của RIÊNG mắt đó (nhận nhãn đang hiển thị và cờ đang hiệu lực của mắt đó), mắt kia giữ nguyên, như CVAT (B26, cùng cách
+        `_flag_key`); rồi các điểm trong `new` được đặt vào toạ độ mới; các frame sau tính lại. Một bước hoàn tác.
+        Mọi điểm trong `new` trùng toạ độ đang hiển thị thì không làm gì (trả False, không ghim, không hoàn tác). Trả True nếu vừa tạo keyframe mới."""
         self._guard_qc()
-        newly = frame not in self.pins
-        if newly and frame not in self.labels:
-            raise ValueError("frame này chưa có nhãn do tool tính; hãy ghim một frame đứng trước nó trước")
+        if not new:
+            return False
+        have = self.pins.get(frame, {})
+        eyes = [l for l, sp in EYES.items() if any(pid in sp.ids for pid in new)]
+        keyed = {l: all(i in have for i in EYES[l].ids) for l in eyes}
+        shown: dict[int, Point] = {}
+        for l in eyes:
+            ids = EYES[l].ids
+            if not keyed[l] and (frame not in self.labels or not all(i in self.labels[frame].points for i in ids)):
+                raise ValueError("frame này chưa có nhãn do tool tính; hãy ghim một frame đứng trước nó trước")
+            src = have if keyed[l] else self.labels[frame].points
+            shown.update({i: src[i] for i in ids})
+        if all(pid in shown and tuple(shown[pid]) == tuple(xy) for pid, xy in new.items()):
+            return False                                     # toạ độ không đổi (bấm không kéo): không ghim, không thêm bước hoàn tác rỗng
+        inherited = self.flags_at(frame)                     # tính trước khi đổi pins
         self._push_undo()
-        if newly:
-            flags = self.flags_at(frame)
-            self.pins[frame] = dict(self.labels[frame].points)
-            if flags:
-                self.flags[frame] = flags
+        newly = False
+        for l in eyes:
+            if keyed[l]:
+                continue
+            ids = EYES[l].ids
+            self.pins.setdefault(frame, {}).update({i: self.labels[frame].points[i] for i in ids})
+            mine = {i: k for i, k in inherited.items() if i in ids}
+            if mine:
+                self.flags.setdefault(frame, {}).update(mine)
+            newly = True
         for pid, xy in new.items():
-            self.pins[frame][pid] = xy
+            self.pins.setdefault(frame, {})[pid] = xy
             self.touched.update({l: time.time() for l, sp in EYES.items() if pid in sp.ids})
             self.estimates.get(frame, {}).pop(pid, None)
         self.recompute()
@@ -364,31 +448,37 @@ class Session:
 
     def paste_points(self, frame: int, pts: dict[int, Point]) -> None:
         """Dán nhãn vào `frame` (thành frame ghim, một bước hoàn tác): đủ 16 điểm hai mắt, hoặc 8 điểm của một mắt
-        (khi đó frame phải đã có nhãn để giữ nguyên mắt kia)."""
+        (khi đó frame phải đã có nhãn). Dán một mắt chỉ làm mắt đó thành keyframe và chỉ bỏ cờ của mắt đó; mắt kia và cờ của nó giữ nguyên (B26)."""
         self._guard_qc()
         every = {i for spec in EYES.values() for i in spec.ids}
+        one = next((spec for spec in EYES.values() if set(pts) == set(spec.ids)), None)
         if set(pts) == every:
-            full = {i: tuple(p) for i, p in pts.items()}
-        elif any(set(pts) == set(spec.ids) for spec in EYES.values()):
-            base = self.pins.get(frame) or (self.labels[frame].points if frame in self.labels else None)
-            if base is None:
+            self._push_undo()
+            self.pins[frame] = {i: tuple(p) for i, p in pts.items()}
+            self.flags.pop(frame, None)
+            self.estimates.pop(frame, None)
+        elif one is not None:
+            if not self.pins.get(frame) and frame not in self.labels:
                 raise ValueError("frame này chưa có nhãn mắt kia nên chưa dán được một mắt")
-            full = dict(base)
-            full.update({i: tuple(p) for i, p in pts.items()})
+            self._push_undo()
+            self.pins.setdefault(frame, {}).update({i: tuple(p) for i, p in pts.items()})
+            for store in (self.flags, self.estimates):               # cờ và ước lượng cũ của mắt được dán ở frame này không còn đúng
+                if frame in store:
+                    store[frame] = {i: v for i, v in store[frame].items() if i not in one.ids}
+                    if not store[frame]:
+                        del store[frame]
         else:
             raise ValueError("nhãn dán phải đủ 16 điểm của hai mắt hoặc đủ 8 điểm của một mắt")
-        self._push_undo()
-        self.pins[frame] = full
-        self.flags.pop(frame, None)
-        self.estimates.pop(frame, None)
         self.touched.update({l: time.time() for l, sp in EYES.items() if set(sp.ids) & set(pts)})
         self.recompute()
 
     def swap_eyes(self) -> None:
-        """Hoán đổi vai trò mattrai và matphai ở mọi frame ghim (sửa khi tool gán nhầm trái/phải). Một bước hoàn tác."""
+        """Hoán đổi vai trò mattrai và matphai ở mọi frame ghim (sửa khi tool gán nhầm trái/phải). Một bước hoàn tác.
+        Mã nội bộ `eye_uid` đổi chỗ cùng dữ liệu (ẩn riêng / Pinned của giao diện đi theo mắt); ID đối tượng giữ theo label như trước."""
         a, b = EYES["mattrai"].ids, EYES["matphai"].ids
         mp = {**dict(zip(a, b)), **dict(zip(b, a))}
         self._push_undo()
+        self.eye_uid = {"mattrai": self.eye_uid["matphai"], "matphai": self.eye_uid["mattrai"]}
         self.pins = {f: {mp[i]: p for i, p in pts.items()} for f, pts in self.pins.items()}
         self.flags = {f: {mp[i]: k for i, k in fl.items()} for f, fl in self.flags.items()}
         self.estimates = {f: {mp[i]: r for i, r in es.items()} for f, es in self.estimates.items()}
@@ -455,6 +545,7 @@ class Session:
                 self.estimates.pop(f, None)
         self.touched[label] = time.time()
         self.obj_ids.pop(label, None)                            # ID của đối tượng đã xoá không dùng lại (như CVAT)
+        self.eye_uid[label] = next(_EYE_UIDS)                    # vẽ lại mắt này là đối tượng mới; Ctrl+Z trả mã cũ (và trạng thái giao diện của nó)
         if not self.pins and len(self.layers) > 1:               # bộ đối tượng không còn gì thì bỏ luôn
             del self.layers[self.cur]
             self.cur = min(self.cur, len(self.layers) - 1)
@@ -462,19 +553,11 @@ class Session:
         return len(hit)
 
     def end_eye_here(self, label: str, frame: int) -> None:
-        """Kết thúc nhãn của `label` từ `frame` trở đi: đánh Outside cả 8 điểm tại frame ghim này (frame được ghim nếu chưa); cờ chép sang các frame sau."""
-        self._guard_qc()
-        ids = EYES[label].ids
-        base = self.pins.get(frame) or (self.labels[frame].points if frame in self.labels else None)
-        if base is None or not all(i in base for i in ids):
+        """Kết thúc nhãn của `label` từ `frame` trở đi: đánh Outside cả 8 điểm của mắt đó tại `frame`; cờ chép sang các frame sau. Frame chưa là
+        keyframe của mắt đó thì thành keyframe của RIÊNG mắt đó (nhận nhãn đang hiển thị), mắt kia không đổi, như CVAT. Một bước hoàn tác."""
+        if self._flag_key(frame, label) is None:             # _flag_key đã gồm bước hoàn tác và chỉ ghim mắt `label`
             raise ValueError("frame này chưa có nhãn của mắt đó")
-        self._push_undo()
-        if frame not in self.pins:
-            flags = self.flags_at(frame)
-            self.pins[frame] = dict(base)
-            if flags:
-                self.flags[frame] = flags
-        self.flags.setdefault(frame, {}).update({i: "outside" for i in ids})
+        self.flags.setdefault(frame, {}).update({i: "outside" for i in EYES[label].ids})
         self.touched[label] = time.time()
         self.recompute()
 
@@ -525,11 +608,15 @@ class Session:
         self.recompute()
         return label
 
+    def pin_count(self) -> int:
+        """Tổng số frame ghim của MỌI người trong job (phạm vi của clear_all), không chỉ người đang chọn."""
+        return sum(len(L.pins) for L in self.layers)
+
     def clear_all(self) -> int:
         """Xoá mọi frame ghim, cờ và ước lượng (như Remove annotations của CVAT); hoàn tác được. Trả về số frame ghim đã xoá."""
         self._guard_qc()                                     # đổi layers/pending cả khi không có frame ghim
-        n = len(self.pins)
-        if n:
+        n = self.pin_count()
+        if n or len(self.layers) > 1:                        # bỏ cả bộ trống của người khác thì cũng phải hoàn tác được
             self._push_undo()
         for L in self.layers:
             L.pins, L.flags, L.estimates, L.pending = {}, {}, {}, {}
@@ -557,7 +644,7 @@ class Session:
     # ---- hoàn tác ----
     def _snapshot(self) -> dict:
         return {"layers": [{"pins": copy.deepcopy(L.pins), "flags": copy.deepcopy(L.flags), "estimates": copy.deepcopy(L.estimates),
-                            "ids": dict(L.obj_ids)} for L in self.layers], "cur": self.cur, "next_id": self.next_id}
+                            "ids": dict(L.obj_ids), "uid": dict(L.eye_uid)} for L in self.layers], "cur": self.cur, "next_id": self.next_id}
 
     def _restore(self, snap: dict) -> None:
         while len(self.layers) < len(snap["layers"]):
@@ -565,6 +652,7 @@ class Session:
         del self.layers[len(snap["layers"]):]
         for L, d in zip(self.layers, snap["layers"]):                    # dùng lại Layer cũ để giữ bộ nhớ đệm đoạn bám
             L.pins, L.flags, L.estimates, L.obj_ids = d["pins"], d["flags"], d["estimates"], dict(d["ids"])
+            L.eye_uid = dict(d.get("uid", L.eye_uid))                   # mã mắt theo bản chụp: trạng thái giao diện về đúng mắt (B08, B09)
         self.cur, self.next_id = min(snap["cur"], len(self.layers) - 1), snap["next_id"]
         self.recompute()
 
@@ -625,6 +713,7 @@ class Session:
     def _push_undo(self) -> None:
         self._guard_qc()
         self.dirty = True
+        self.unsent = True
         self._undo.append(self._snapshot())
         del self._undo[:-100]
         self._redo.clear()
@@ -636,6 +725,7 @@ class Session:
         self._redo.append(self._snapshot())
         self._restore(self._undo.pop())
         self.dirty = True
+        self.unsent = True
         return True
 
     def redo(self) -> bool:
@@ -645,6 +735,7 @@ class Session:
         self._undo.append(self._snapshot())
         self._restore(self._redo.pop())
         self.dirty = True
+        self.unsent = True
         return True
 
     # ---- lưu / mở phiên làm việc (chỉ toạ độ và cờ, không có ảnh) ----
@@ -658,6 +749,7 @@ class Session:
                            "ids": dict(L.obj_ids)} for L in self.layers]}
         if self.cvat is not None:
             out["cvat"] = dict(self.cvat)                        # mốc cập nhật của job lúc bắt đầu làm việc (để biết CVAT có bị sửa không)
+            out["unsent"] = bool(self.unsent)                    # còn công chưa gửi lên CVAT (Đăng xuất dựa vào đây để hỏi trước khi xoá file phiên)
         return out
 
     def load_state(self, d: dict) -> None:
@@ -665,11 +757,17 @@ class Session:
         self._guard_qc()
         if d.get("version") not in (1, 2) or d.get("frames") != self.n_frames:
             raise ValueError("file phiên làm việc không khớp thư mục ảnh này")
-        before = (self.layers, self.cur, self.cvat, self.deleted, self.next_id, list(self._undo), list(self._redo), self.stale, self.dirty)
+        saved_names = d.get("names")                                    # tên ảnh đầu, cuối lúc lưu (file bản 1 chưa có): cùng số frame mà ảnh khác thì không nạp
+        now_names = [self.names[0], self.names[-1]]
+        if saved_names is not None and (not isinstance(saved_names, (list, tuple)) or list(saved_names) != now_names):
+            was = f"{saved_names[0]} … {saved_names[-1]}" if isinstance(saved_names, (list, tuple)) and len(saved_names) == 2 else str(saved_names)
+            raise ValueError(f"file phiên làm việc thuộc dãy ảnh khác (đã lưu: ảnh đầu / cuối {was}; hiện tại: {now_names[0]} … {now_names[1]}), "
+                             "không nạp lên ảnh này")
+        before = (self.layers, self.cur, self.cvat, self.deleted, self.next_id, list(self._undo), list(self._redo), self.stale, self.dirty, self.unsent)
         try:
             self._load_state(d)
         except BaseException:
-            (self.layers, self.cur, self.cvat, self.deleted, self.next_id, self._undo[:], self._redo[:], self.stale, self.dirty) = before
+            (self.layers, self.cur, self.cvat, self.deleted, self.next_id, self._undo[:], self._redo[:], self.stale, self.dirty, self.unsent) = before
             self._refresh_turns()
             raise
 
@@ -695,6 +793,7 @@ class Session:
         self._redo.clear()
         self.recompute()
         self.dirty = False
+        self.unsent = bool(d["unsent"]) if "unsent" in d else any(L.pins for L in self.layers)     # file cũ chưa có cờ: có ghim thì coi là chưa gửi (an toàn)
 
     def save_state(self, path: str) -> None:
         import json
@@ -899,4 +998,4 @@ class Session:
         tracks = self.build_all_tracks(tol)
         cvatxml.write_eyes(self.ann, out_path, new_tracks=tracks)
         first = min(f for L in self.layers for f in L.pins)
-        return {"keyframes": len(tracks[0].keys), "frames": self.n_frames - first, "path": out_path, "tracks": sorted(t.label for t in tracks)}
+        return {"keyframes": sum(len(t.keys) for t in tracks), "frames": self.n_frames - first, "path": out_path, "tracks": sorted(t.label for t in tracks)}

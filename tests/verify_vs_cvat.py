@@ -133,7 +133,7 @@ def main():
                 for i in spec.ids:
                     want = s.flags_at(f).get(i)
                     p = theirs.points.get(i)
-                    if p is None or (p.outside and p.xy == (0.0, 0.0) and not p.keyframe):   # CVAT bỏ điểm Outside khỏi file xuất
+                    if p is None or (p.outside and not p.keyframe):   # CVAT bỏ điểm Outside (không phải keyframe của điểm) khỏi file xuất; cvatxml điền lại
                         dropped += 1
                         have = "outside"
                     else:
@@ -191,7 +191,7 @@ def main():
         v7 = roundtrip(s, "propagated")
         kf7 = sorted(f for f, k in v7.tracks["mattrai"][0].keys.items() if k.keyframe)
         pos7 = max(math.dist(v7.tracks["mattrai"][0].keys[g].points[i].xy, s.pins[120][i]) for g in (121, 122, 123) for i in ml.ids
-                   if v7.tracks["mattrai"][0].keys[g].points[i].xy != (0.0, 0.0))
+                   if not (v7.tracks["mattrai"][0].keys[g].points[i].outside and not v7.tracks["mattrai"][0].keys[g].points[i].keyframe))
         check("V7 Propagate: CVAT có keyframe ở các frame vừa nhân và vị trí bằng frame nguồn",
               got == 3 and {121, 122, 123} <= set(kf7) and pos7 < 0.02, f"nhân {got} frame; CVAT keyframe có 121-123: {{121, 122, 123}} <= {len(kf7)} keyframe; lệch {pos7:.4f} px")
         before = {f: dict(p) for f, p in s.pins.items()}

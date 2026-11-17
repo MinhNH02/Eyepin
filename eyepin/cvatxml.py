@@ -9,6 +9,7 @@ Trong file có hai dạng chứa skeleton mắt:
 """
 from __future__ import annotations
 
+import bisect
 import copy
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -62,7 +63,8 @@ def _to_bool(v) -> bool:
 
 def _read_skeleton_points(sk: ET.Element, label: str | None = None) -> dict[int, PointState]:
     """Đọc các điểm của một skeleton. CVAT 2.75 khi xuất bỏ hẳn thẻ của điểm đang Outside (đã thấy trên bản xuất job thật); điểm vắng mặt
-    được điền là Outside ở (0, 0) để mọi chỗ dùng sau đó luôn thấy đủ điểm của label."""
+    được điền là Outside để mọi chỗ dùng sau đó luôn thấy đủ điểm của label. Toạ độ (0, 0) ở đây chỉ là tạm: `_fill_absent` thay bằng toạ độ
+    CVAT đang giữ cho điểm đó."""
     out = {}
     for p in sk.findall("points"):
         x, y = (float(v) for v in p.get("points").split(","))
@@ -72,6 +74,45 @@ def _read_skeleton_points(sk: ET.Element, label: str | None = None) -> dict[int,
         for pid in EYES[label].ids:
             out.setdefault(pid, PointState((0.0, 0.0), True, False, False))
     return out
+
+
+def _absent_ids(sk: ET.Element, label: str) -> set[int]:
+    """Các điểm của label không có thẻ <points> trong skeleton này."""
+    return set(EYES[label].ids) - {int(p.get("label")) for p in sk.findall("points")}
+
+
+def _fill_absent(keys: dict[int, EyeKey], absent: dict[int, set[int]]) -> None:
+    """Thay toạ độ tạm (0, 0) của điểm vắng (`absent`: frame -> các điểm vắng) bằng toạ độ CVAT đang giữ, để bản xem trước và phép quét
+    không thấy điểm nhảy về góc ảnh (B02). Cờ (Outside, không keyframe) giữ nguyên; chỉ đổi dữ liệu đọc ra, cây XML không đụng tới.
+
+    CVAT for video chỉ bỏ thẻ <points> ở frame không phải keyframe của điểm mà keyframe bên trái của điểm đang Outside (keyframe Outside
+    thì vẫn xuất, kèm toạ độ đã lưu); ở đó CVAT nội suy đường thẳng giữa keyframe trái và keyframe phải của chính điểm ấy
+    (`dataset_manager/bindings.py` `_export_track`, `annotation.py` `get_interpolated_shapes`). Hai keyframe đó chính là hai frame gần
+    nhất có mặt điểm này, nên toạ độ là nội suy giữa chúng; chỉ có một phía (trước keyframe đầu, sau keyframe cuối) thì lấy phía đó.
+    Không frame nào có điểm này thì lấy trọng tâm các điểm có mặt của chính skeleton đó."""
+    if not absent:
+        return
+    frames = sorted(keys)
+    for pid in set().union(*absent.values()):
+        have = [g for g in frames if pid not in absent.get(g, ())]
+        for f in frames:
+            if pid not in absent.get(f, ()):
+                continue
+            k = bisect.bisect_left(have, f)
+            a = have[k - 1] if k > 0 else None
+            b = have[k] if k < len(have) else None
+            if a is not None and b is not None:
+                pa, pb = keys[a].points[pid].xy, keys[b].points[pid].xy
+                w = (f - a) / (b - a)
+                xy = (pa[0] + w * (pb[0] - pa[0]), pa[1] + w * (pb[1] - pa[1]))
+            elif a is not None or b is not None:
+                xy = keys[a if a is not None else b].points[pid].xy
+            else:
+                rest = [ps.xy for i, ps in keys[f].points.items() if i not in absent[f]]
+                if not rest:
+                    continue
+                xy = (sum(p[0] for p in rest) / len(rest), sum(p[1] for p in rest) / len(rest))
+            keys[f].points[pid].xy = xy
 
 
 def _remap_frames(root: ET.Element, fn) -> int:
@@ -144,10 +185,14 @@ def _from_tree(tree: ET.ElementTree) -> Annotations:
             other += 1
             continue
         et = EyeTrack(label, attrs=dict(tr.attrib))
+        absent: dict[int, set[int]] = {}
         for sk in tr.findall("skeleton"):
             f = int(sk.get("frame"))
             et.keys[f] = EyeKey(f, _read_skeleton_points(sk, label), _to_bool(sk.get("keyframe", "1")), _to_bool(sk.get("outside", "0")))
+            absent[f] = _absent_ids(sk, label)
+        _fill_absent(et.keys, {f: s for f, s in absent.items() if s})
         tracks[label].append(et)
+    shape_absent: dict[str, dict[int, set[int]]] = {l: {} for l in EYE_LABELS}
     for im in root.findall("image"):
         f = int(im.get("id"))
         frame_names[f] = im.get("name", "")
@@ -155,10 +200,13 @@ def _from_tree(tree: ET.ElementTree) -> Annotations:
             label = sk.get("label")
             if label in EYE_LABELS:
                 shapes[label][f] = EyeKey(f, _read_skeleton_points(sk, label), True, _to_bool(sk.get("outside", "0")))
+                shape_absent[label][f] = _absent_ids(sk, label)
             else:
                 other += 1
         for tag in ("box", "polygon", "polyline", "points", "ellipse", "cuboid", "mask", "tag"):
             other += len(im.findall(tag))
+    for label in EYE_LABELS:
+        _fill_absent(shapes[label], {f: s for f, s in shape_absent[label].items() if s})
     n_frames, width, height = 0, None, None
     meta = root.find("meta")
     if meta is not None:

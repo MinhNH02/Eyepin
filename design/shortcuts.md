@@ -51,7 +51,7 @@ Phím mặc định theo CVAT 2.75 khi có hành động tương ứng. Đổi p
 | Chọn mắt trái (mattrai) | Ctrl+1 | Ctrl+1 |  |
 | Chọn mắt phải (matphai) | Ctrl+2 | Ctrl+2 |  |
 | Khoá/mở khoá mắt đang chọn | l | L |  |
-| Khoá/mở khoá cả hai mắt | Shift+L | T L | CVAT dùng chuỗi T rồi L |
+| Khoá/mở khoá mọi mắt (mọi đối tượng) | Shift+L | T L | CVAT dùng chuỗi T rồi L |
 | Ẩn/hiện mắt đang chọn | h | H |  |
 | Ẩn/hiện toàn bộ nhãn | Shift+H | T H | CVAT dùng chuỗi T rồi H |
 | Occluded cho điểm (đang chọn hoặc dưới chuột) | q / / | Q hoặc / |  |
@@ -62,15 +62,15 @@ Phím mặc định theo CVAT 2.75 khi có hành động tương ứng. Đổi p
 | Kết thúc nhãn từ frame này (Outside) |  | — | đánh Outside cả 8 điểm của mắt đang chọn |
 | Pinned: khoá dời nguyên mắt và xoay | p | P |  |
 | Nhân nhãn sang N frame sau (Propagate) | Ctrl+B | Ctrl+B |  |
-| Đổi màu mắt đang chọn | Return | Enter |  |
+| Đổi màu mắt đang chọn | Enter | Enter |  |
 | Hoán đổi mattrai và matphai |  | — | ô chọn label trên thẻ đối tượng của CVAT |
 | Phóng vào mắt đang chọn |  | — | nhấp đúp dòng trong panel Đối tượng |
 | Sao chép nhãn hai mắt của frame | Ctrl+C | Ctrl+C |  |
 | Dán nhãn vào frame hiện tại (thành frame ghim) | Ctrl+V | Ctrl+V |  |
-| Xoay mắt đang chọn 1° theo chiều kim đồng hồ | period | — | CVAT xoay bằng tay cầm; Shift = 5° |
-| Xoay mắt đang chọn 1° ngược chiều | comma | — | Shift = 5° |
-| Xoay mắt đang chọn 5° theo chiều kim đồng hồ | greater | — |  |
-| Xoay mắt đang chọn 5° ngược chiều | less | — |  |
+| Xoay mắt đang chọn 1° theo chiều kim đồng hồ | . | — | CVAT xoay bằng tay cầm; Shift = 5° |
+| Xoay mắt đang chọn 1° ngược chiều | , | — | Shift = 5° |
+| Xoay mắt đang chọn 5° theo chiều kim đồng hồ | > | — |  |
+| Xoay mắt đang chọn 5° ngược chiều | < | — |  |
 
 ## Ghim / vẽ
 

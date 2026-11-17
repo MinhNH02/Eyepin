@@ -147,6 +147,9 @@ def scan(ann: Annotations, n_frames: int, *, width: float | None = None, height:
         for f in range(n_frames):
             key = eye_at(ann, label, f)
             if key is None:
+                if still_run and still_run + 1 >= still_frames:      # mắt vắng giữa chừng: báo chuỗi đứng yên trước khi đặt lại
+                    raw.append(("yellow", "still", label, still_start, tuple(spec.ids),
+                                f"nhãn đứng yên {still_run + 1} frame liền", float(still_run + 1)))
                 prev_pts, prev_ear, still_run = None, None, 0
                 continue
             for code, pts, msg, val in _rule_findings(key, spec, width, height):

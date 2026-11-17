@@ -89,7 +89,7 @@ class FramesMixin:
     def remove_annotations(self, confirmed: bool | None = None):
         if not self.s:
             return
-        n = len(self.s.pins)
+        n = self.s.pin_count()
         if not n:
             self.notice = "Chưa có nhãn nào để xoá."
             self.refresh()
@@ -158,12 +158,18 @@ class FramesMixin:
             self.remove_annotations()
 
     def finish_job(self, export: bool | None = None):
-        """Finish the job: lưu phiên rồi mời xuất file import (nơi CVAT sẽ import)."""
+        """Finish the job: lưu phiên rồi mời xuất file import (nơi CVAT sẽ import). Thông báo nói đúng việc đã xảy ra: lưu xong, lưu lỗi, hay
+        đang mở bằng --pins (tool không ghi file phiên)."""
         if not self.s:
             return
-        self.save_work()
+        if self.save_work():
+            state = "Đã lưu phiên."
+        elif self.scratch:
+            state = "Chưa lưu phiên: đang mở bằng --pins nên tool không ghi file phiên."
+        else:
+            state = "Không lưu được phiên (lý do ở thanh trạng thái)."
         if export is None:
-            export = messagebox.askyesno("Hoàn tất job", "Đã lưu phiên. Xuất file import cho CVAT ngay bây giờ?", parent=self.root)
+            export = messagebox.askyesno("Hoàn tất job", f"{state} Xuất file import cho CVAT ngay bây giờ?", parent=self.root)
         if export:
             self.export()
 

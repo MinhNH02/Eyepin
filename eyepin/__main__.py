@@ -18,19 +18,21 @@ def main(argv=None):
     pv.add_argument("frames_dir")
     pv.add_argument("out_png")
     pv.add_argument("--frame", type=int, default=0)
-    pv.add_argument("--pins", help="file JSON điểm ghim: {frame: {id: [x, y]}} với 8 điểm ghim của mỗi mắt")
+    pv.add_argument("--pins", help="file JSON điểm ghim: {frame: {id: [x, y]}} với 4 điểm ghim của mỗi mắt")
     pv.add_argument("--xml", help="file nhãn CVAT 1.1 (tuỳ chọn)")
-    gu = sub.add_parser("gui", help="mở cửa sổ EyePin")
+    gu = sub.add_parser("gui", help="mở EyePin: không kèm thư mục ảnh thì hiện màn đăng nhập CVAT trước (có liên kết làm việc không cần CVAT); "
+                                    "kèm thư mục ảnh thì vào thẳng cửa sổ")
     gu.add_argument("frames_dir", nargs="?")
     gu.add_argument("--xml")
     gu.add_argument("--pins", help="file JSON điểm ghim (như lệnh preview): mở với các ghim này, không khôi phục và không ghi file phiên")
     gu.add_argument("--selftest", action="store_true", help="mở cửa sổ, vẽ một lần rồi đóng (kiểm lỗi)")
-    gu.add_argument("--cvat", help="địa chỉ CVAT trên máy (ví dụ http://localhost:8080): mở hộp đăng nhập thay vì mở thư mục ảnh; mật khẩu hỏi trong cửa sổ")
+    gu.add_argument("--cvat", help="địa chỉ CVAT trên máy (ví dụ http://localhost:8080) điền sẵn ở màn đăng nhập; mật khẩu hỏi trong cửa sổ")
     gu.add_argument("--job", type=int, help="số job CVAT tự mở sau khi đăng nhập (đi kèm --cvat)")
     tu = sub.add_parser("turns", help="báo các đoạn quay đầu từ điểm ghim (không cần cửa sổ)")
     tu.add_argument("frames_dir")
-    tu.add_argument("--pins", required=True, help="file JSON điểm ghim: {frame: {id: [x, y]}} với 8 điểm ghim của mỗi mắt")
-    rp = sub.add_parser("report", help="báo sai số của các cách đoán tại frame ghim bị giấu (đường thẳng CVAT, bám tiến)")
+    tu.add_argument("--pins", required=True, help="file JSON điểm ghim: {frame: {id: [x, y]}} với 4 điểm ghim của mỗi mắt")
+    rp = sub.add_parser("report", help="báo độ chính xác (IoU vùng mắt là chỉ số chính; Dice, Boundary IoU, Precision/Recall, sai số px) "
+                                       "của các cách đoán tại frame ghim bị giấu (đường thẳng CVAT, bám tiến, hai chiều)")
     rp.add_argument("frames_dir")
     rp.add_argument("--pins", required=True, help="file JSON điểm ghim, như lệnh turns")
     sk = sub.add_parser("shortcuts", help="in (hoặc ghi ra file) guide phím tắt dạng Markdown")
@@ -38,7 +40,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd == "shortcuts":
         from . import shortcuts
-        text = shortcuts.guide_markdown(shortcuts.bindings(shortcuts.load_settings()))
+        text = shortcuts.guide_markdown()                  # luôn là phím MẶC ĐỊNH, không đọc phím cá nhân ở ~/.eyepin/settings.json
         if a.out:
             open(a.out, "w", encoding="utf-8").write(text)
             print(f"Đã ghi {a.out}")
@@ -71,9 +73,13 @@ def main(argv=None):
           + "; track: " + ", ".join(f"{l} {len(v)}" for l, v in ann.tracks.items()))
     if not found:
         print("Không có frame nào cần chú ý.")
+    if found:
+        import os
+        os.system("")                                            # bật chuỗi màu ANSI trên cửa sổ console Windows
     for f in found:
         rng = f"{f.frame}" if f.frame == f.last else f"{f.frame}–{f.last}"
-        print(f"{'ĐỎ  ' if f.level == 'red' else 'VÀNG'} frame {rng:>9} {f.label:8s} {f.message}")
+        dot = "\x1b[38;2;220;60;60m●\x1b[0m" if f.level == "red" else "\x1b[38;2;240;170;40m●\x1b[0m"   # đỏ #DC3C3C, vàng #F0AA28 như dải thời gian
+        print(f"{dot} frame {rng:>9} {f.label:8s} {f.message}")
     return 1 if any(f.level == "red" for f in found) else 0
 
 
@@ -104,13 +110,23 @@ def _preview(a):
     import cv2
     from .render import render_main, render_timeline, render_thumb, status_text
     from .session import Session
-    s = Session(a.frames_dir, a.xml)
-    if a.pins:
-        with open(a.pins, encoding="utf-8") as fh:
-            s.load_pins(json.load(fh))
+    try:
+        s = Session(a.frames_dir, a.xml)
+        if a.pins:
+            with open(a.pins, encoding="utf-8") as fh:
+                s.load_pins(json.load(fh))
+    except (OSError, ValueError) as err:             # file ghim hỏng, thư mục ảnh/XML sai: một dòng tiếng Việt, không Traceback
+        print(f"Lỗi: {err}")
+        return 2
     s.run_scan()
     img, view = render_main(s, a.frame)
-    cv2.imwrite(a.out_png, img)
+    try:
+        ok = cv2.imwrite(a.out_png, img)
+    except cv2.error:                                 # đuôi file không có bộ ghi (ví dụ .xyz)
+        ok = False
+    if not ok:                                        # imwrite trả False khi thư mục không có, hết chỗ, không ghi được: không được thoát 0
+        print(f"Lỗi: không ghi được ảnh ra {a.out_png} (thư mục không tồn tại, không có quyền ghi hoặc đuôi file không hỗ trợ).")
+        return 1
     print(status_text(s, a.frame))
     return 0
 

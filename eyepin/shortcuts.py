@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,7 +60,7 @@ ACTIONS: tuple[Action, ...] = (
     Action("label_mattrai", G_OBJ, "Chọn mắt trái (mattrai)", ("<Control-Key-1>",), "Ctrl+1"),
     Action("label_matphai", G_OBJ, "Chọn mắt phải (matphai)", ("<Control-Key-2>",), "Ctrl+2"),
     Action("lock", G_OBJ, "Khoá/mở khoá mắt đang chọn", ("l",), "L"),
-    Action("lock_all", G_OBJ, "Khoá/mở khoá cả hai mắt", ("L",), "T L", "CVAT dùng chuỗi T rồi L"),
+    Action("lock_all", G_OBJ, "Khoá/mở khoá mọi mắt (mọi đối tượng)", ("L",), "T L", "CVAT dùng chuỗi T rồi L"),
     Action("hide", G_OBJ, "Ẩn/hiện mắt đang chọn", ("h",), "H"),
     Action("hide_all", G_OBJ, "Ẩn/hiện toàn bộ nhãn", ("H",), "T H", "CVAT dùng chuỗi T rồi H"),
     Action("occluded", G_OBJ, "Occluded cho điểm (đang chọn hoặc dưới chuột)", ("q", "<slash>"), "Q hoặc /"),
@@ -112,10 +113,12 @@ NOT_APPLICABLE = (
 DEFAULT_SETTINGS = {
     "player": {"step": 10, "speed_ms": 120, "fit_on_frame": False, "smooth": True, "bg": "#2B2A27", "rotate_all": True, "show_deleted": False},
     "workspace": {"remember_display": True, "autosave": True, "autosave_min": 2, "text_always": False, "text_content": ["id", "label", "source"],
-                  "font_size": 1.0, "focus_padding": 60, "zoom_step": 1.25, "mouse_speed": 1.0},
+                  "font_size": 1.0, "focus_padding": 60, "zoom_step": 1.25, "mouse_speed": 1.0,
+                  "show_neighbors": True,                                   # tab "Frame lân cận" ở panel phải (tắt: gỡ tab, không tính ảnh nhỏ)
+                  "remember_login_hours": 8},                               # nhớ đăng nhập CVAT bao nhiêu giờ (0 = không nhớ, tối đa 72); xem cvatlogin.py
     "display": {},
     "shortcuts": {},
-    "cvat": {"url": "http://localhost:8080", "user": ""},        # chỉ địa chỉ và tên đăng nhập gần nhất; mật khẩu và khoá không bao giờ lưu
+    "cvat": {"url": "http://localhost:8080", "user": ""},        # chỉ địa chỉ và tên đăng nhập gần nhất; mật khẩu và khoá không bao giờ vào file này (khoá nhớ mã hoá ở cvat_login.bin)
 }
 
 
@@ -160,7 +163,7 @@ def conflicts(b: dict[str, tuple[str, ...]]) -> dict[str, list[str]]:
 
 _NAMES = {"space": "Space", "grave": "`", "slash": "/", "plus": "+", "minus": "-", "equal": "=", "bracketright": "]",
           "bracketleft": "[", "Escape": "Esc", "Delete": "Del", "Home": "Home", "End": "End", "Tab": "Tab", "ISO_Left_Tab": "Shift+Tab",
-          "Left": "←", "Right": "→", "Up": "↑", "Down": "↓"}
+          "Left": "←", "Right": "→", "Up": "↑", "Down": "↓", "period": ".", "comma": ",", "greater": ">", "less": "<", "Return": "Enter"}
 
 
 def pretty(seq: str) -> str:
@@ -187,6 +190,8 @@ def event_to_seq(keysym: str, state: int) -> str | None:
     # Tk trên Windows: Alt = 0x20000, còn 0x8 (Mod1) là đèn NumLock; trên X11 thì Alt = Mod1 (0x8)
     ctrl, shift = bool(state & 0x4), bool(state & 0x1)
     alt = bool(state & 0x20000) if sys.platform == "win32" else bool(state & 0x8)
+    if state & 0x2 and len(keysym) == 1 and keysym.isalpha():
+        keysym = keysym.swapcase()                         # Caps Lock (bit Lock 0x2) đổi hoa/thường của keysym; chữ hoa chỉ do Shift thật (0x1) mới tính (B14)
     if keysym == "ISO_Left_Tab":
         return "<ISO_Left_Tab>"
     if not (ctrl or alt):
@@ -201,6 +206,18 @@ def event_to_seq(keysym: str, state: int) -> str | None:
     if len(keysym) == 1 and keysym.isdigit():
         return f"<{mods}Key-{keysym}>"
     return f"<{mods}{'Shift-' if shift else ''}{keysym}>"
+
+
+_LETTER_SEQ = re.compile(r"(<(?:[A-Za-z0-9]+-)*)([A-Za-z])(>)")
+
+
+def caps_variant(seq: str) -> str | None:
+    """Chuỗi phím Tk cùng phím với `seq` nhưng đảo hoa/thường chữ cái cuối (`h` -> `H`, `<Control-z>` -> `<Control-Z>`); None nếu `seq` không
+    kết thúc bằng một chữ cái. Khi Caps Lock bật, Tk đưa keysym đã đảo hoa/thường, nên binding chữ cái phải gắn cả hai dạng (B14)."""
+    if len(seq) == 1:
+        return seq.swapcase() if seq.isalpha() else None
+    m = _LETTER_SEQ.fullmatch(seq)
+    return m.group(1) + m.group(2).swapcase() + m.group(3) if m else None
 
 
 def guide_markdown(b: dict[str, tuple[str, ...]] | None = None) -> str:
