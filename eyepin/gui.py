@@ -59,6 +59,20 @@ def _hex(bgr) -> str:
     return "#%02x%02x%02x" % (int(bgr[2]), int(bgr[1]), int(bgr[0]))
 
 
+def _unbind_one(w, tag: str, seq: str, funcid: str | None):
+    """Gỡ đúng MỘT bind (`funcid` do `bind(..., add="+")` trả về) của `seq` trên thẻ `tag`, giữ các bind khác. Không dùng `unbind(seq, funcid)`:
+    trên Python 3.12 nó gỡ hết mọi bind của `seq`."""
+    if not funcid:
+        return
+    try:
+        script = w.tk.call("bind", tag, seq)
+        keep = "\n".join(line for line in str(script).split("\n") if funcid not in line)
+        w.tk.call("bind", tag, seq, keep)
+        w.deletecommand(funcid)
+    except tk.TclError:
+        pass
+
+
 class CanvasPainter:
     """Bút vẽ ra đối tượng vector của Canvas (như CVAT vẽ nhãn bằng SVG đè lên ảnh). Kéo điểm, xoay nhãn chỉ dựng lại vài chục đối tượng thay vì
     vẽ và đổ lại cả vùng ảnh vào Tk, nên không chậm theo cỡ khung. Cùng giao diện với `render.CvPainter`; `tf` đổi toạ độ khung vẽ (chưa xoay)
@@ -181,7 +195,9 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         self.sync_look_vars()
         self._bind_keys()
         root.protocol("WM_DELETE_WINDOW", self.on_close)
-        root.bind("<Destroy>", self._on_root_destroy, add="+")      # mọi đường huỷ cửa sổ (shutdown, root.destroy() thẳng) đều huỷ hẹn giờ còn chờ (B13)
+        self._destroy_bind = root.bind("<Destroy>", self._on_root_destroy, add="+")   # mọi đường huỷ cửa sổ (shutdown, root.destroy() thẳng) đều huỷ hẹn giờ còn chờ (B13)
+        self.to_login = lambda r: FrontDoor(r)   # Đăng xuất dựng lại màn đăng nhập trên cùng cửa sổ; FrontDoor ghi đè để giữ tham số của nó (trừ job)
+        self._torn = False
         self.ask_restore = self._ask_restore
         self._autosave_job = None
         self._schedule_autosave()
@@ -229,7 +245,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         for seq in ("<Escape>", "<Tab>", "<ISO_Left_Tab>"):      # Esc bỏ chữ gõ dở; Tab không chuyển focus sang panel phải (B06)
             self.entry.bind(seq, self._leave_entry)
         self.entry.bind("<FocusOut>", lambda e: self._sync_entry())
-        self.root.bind_all("<ButtonPress>", self._click_focus, add="+")
+        self._click_bind = self.root.bind_all("<ButtonPress>", self._click_focus, add="+")
         self.total = tk.StringVar(value="/ 0")
         ttk.Label(top, style="Bar.TLabel", textvariable=self.total, width=7).pack(side="left")
         self.frame_next_btn = B("next", lambda: self.search(1), lambda: self._nav_tip(1))
@@ -264,7 +280,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         self.filter_btn = IconButton(top, "filter", popup(flt_menu), kind="bar", size=BAR_SIZE,
                                      tip=lambda: f"Lọc frame (đang: {Session.FILTERS[self.filter]}). {self.kl('search_prev')}/{self.kl('search_next')} nhảy tới frame thoả")
         info_btn = B("info", self.show_info, f"Thông tin job ({self.kl('info')})")
-        self.logout_btn = B("logout", self.logout, "Đăng xuất: xoá đăng nhập đã nhớ và các phiên làm việc CVAT đã lưu trên máy này, rồi đóng EyePin (hỏi trước nếu còn công chưa gửi)")
+        self.logout_btn = B("logout", self.logout, "Đăng xuất: xoá đăng nhập đã nhớ và các phiên làm việc CVAT đã lưu trên máy này, rồi về màn đăng nhập (hỏi trước nếu còn công chưa gửi)")
         for w in (self.logout_btn, self.view_btn, self.filter_btn, self.fullscreen_btn, info_btn, *self._cvat_buttons(top)):    # logout_btn đầu tiên = ngoài cùng bên phải
             w.pack(side="right", padx=2)
         # --- thân: thanh công cụ dọc bên trái | ảnh | panel phải ---
@@ -674,16 +690,65 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
 
     def shutdown(self):
         """Đóng cửa sổ không hỏi nữa (nơi gọi đã hỏi): lưu cài đặt, đóng client CVAT, dừng hẹn giờ, huỷ cửa sổ."""
-        self.settings["display"] = {k: getattr(self.look, k) for k in DISPLAY_KEYS}
-        try:
-            sc.save_settings(self.settings)
-        except OSError:
-            pass
+        self._save_display_settings()
         if self.cvat_client is not None:
             self.cvat_client.close()
         self.playing = False
         self._cancel_play_job()
         self.root.destroy()
+
+    def _save_display_settings(self):
+        self.settings["display"] = {k: getattr(self.look, k) for k in DISPLAY_KEYS}
+        try:
+            sc.save_settings(self.settings)
+        except OSError:
+            pass
+
+    def back_to_login(self):
+        """Sau Đăng xuất (đã dọn xong): lưu cài đặt, gỡ cửa sổ gán nhãn khỏi `root` rồi dựng lại màn đăng nhập trên chính cửa sổ đó.
+        Không tự mở lại job nào (kể cả `--job`): người dùng phải đăng nhập lại. Chỉ đóng cửa sổ mới thoát tiến trình."""
+        self._save_display_settings()
+        self.teardown()
+        self.to_login(self.root)
+
+    def teardown(self):
+        """Gỡ `App` khỏi `root` mà KHÔNG huỷ `root`: dừng phát, huỷ mọi hẹn giờ, gỡ phím và bind của App trên `root`/"all", tắt toàn màn hình,
+        huỷ hộp thoại và mọi widget con, trả nút X về `root.destroy`, đóng client CVAT. Gọi lại lần hai không làm gì."""
+        if self._torn:
+            return
+        self._torn = True
+        root = self.root
+        self.playing = False
+        self._cancel_play_job()
+        self._cancel_all_after()
+        for seq in self._bound:
+            try:
+                root.unbind(seq)                                  # phím chỉ App gắn vào thẻ "." nên gỡ cả sequence là đúng
+            except tk.TclError:
+                pass
+        self._bound = []
+        _unbind_one(root, ".", "<Destroy>", getattr(self, "_destroy_bind", None))   # không dùng unbind(seq, funcid): Python 3.12 gỡ hết mọi bind của seq
+        _unbind_one(root, "all", "<ButtonPress>", getattr(self, "_click_bind", None))
+        try:
+            root.attributes("-fullscreen", False)
+        except tk.TclError:
+            pass
+        for d in list(self._dialogs.values()):
+            try:
+                d.destroy()
+            except tk.TclError:
+                pass
+        self._dialogs.clear()
+        for w in root.winfo_children():
+            try:
+                w.destroy()
+            except tk.TclError:
+                pass
+        root.protocol("WM_DELETE_WINDOW", root.destroy)
+        if self.cvat_client is not None:
+            self.cvat_client.close()
+            self.cvat_client = None
+        self.s = None
 
     def save_settings(self):
         try:
@@ -2575,7 +2640,7 @@ def run(frames_dir: str | None, xml: str | None, selftest: bool = False, pins: s
         FrontDoor(root, url=cvat, job=job)
         root.mainloop()
         return 0
-    app = App(root)
+    app = App(root)                                      # phiên thư mục ảnh: Đăng xuất cũng về màn đăng nhập (`App.to_login` mặc định = FrontDoor(root))
     if cvat:                                             # --cvat [--job] kèm --selftest: hộp đăng nhập cũ (hỏi mật khẩu trong cửa sổ); có --job thì tự mở job đó sau khi đăng nhập
         app.open_cvat(url=cvat, job=job)
     elif frames_dir:

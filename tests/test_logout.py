@@ -140,7 +140,7 @@ class LogoutCase(G.CvatGuiCase):
     def logout_app(self, open_job=True, draw=False, job=None):
         self.serve(*([job] if job else []))
         app = self.make_app()
-        app.shutdown = lambda: self.shut.append(1)                       # không đóng cửa sổ Tk dùng chung của test
+        app.back_to_login = lambda: self.shut.append(1)                  # đã rời job sau khi dọn; không dựng lại màn đăng nhập trên cửa sổ Tk dùng chung của test
         app.ask_logout = lambda: self.asked.append(("generic",)) or self.answers.get("generic", True)
         app.ask_logout_open_job = lambda job_id, pins: self.asked.append(("open", job_id, pins)) or self.answers.get("open", "discard")
         app.ask_logout_others = lambda items: self.asked.append(("others", [(u.job, u.pins, u.known) for u in items])) or self.answers.get("others", True)

@@ -5,7 +5,8 @@
   không cần CVAT → mở thư mục ảnh"). Còn khoá đã nhớ (eyepin.cvatlogin) còn hiệu lực thì bỏ qua màn này. Không đụng tới `App`, nên dựng được trước nó.
 - `FrontDoor`: nối `LoginScreen` với cửa sổ chính: đăng nhập xong dựng `App` rồi mở `--job` hoặc hộp "Mở từ CVAT…" đã đăng nhập sẵn; "làm việc không
   cần CVAT" dựng `App` trống như trước đây.
-- `LoginMixin` (của `App`): "Đăng xuất…" — xoá khoá đã nhớ và tên đăng nhập trên máy này rồi đóng cửa sổ.
+- `LoginMixin` (của `App`): "Đăng xuất…" — xoá khoá đã nhớ, tên đăng nhập và phiên CVAT trên máy này rồi về màn đăng nhập trong cùng cửa sổ
+  (`App.back_to_login` → `App.teardown` → `App.to_login`); không tự mở lại job nào. Chỉ đóng cửa sổ mới thoát EyePin.
 
 Việc mạng chạy trên luồng nền; luồng nền không đụng vào Tk (kết quả đi qua hàng đợi, lấy bằng `root.after`). Mật khẩu bị xoá khỏi ô nhập sau mỗi lần thử.
 Màn này chỉ kiểm tài khoản CVAT: nó không khoá được ảnh hay file trên máy.
@@ -247,6 +248,7 @@ class FrontDoor:
                  settings: dict | None = None):
         self.root, self.job, self.app = root, job, None
         self._factory = app_factory
+        self._url, self._new_client = url, new_client
         self.screen = LoginScreen(root, on_login=self._login, on_local=self._local, url=url, settings=settings, new_client=new_client)
 
     def _build_app(self):
@@ -254,6 +256,9 @@ class FrontDoor:
             from .gui import App                             # nạp muộn: gui.py cũng nạp module này
             self._factory = App
         self.app = self._factory(self.root)
+        # Đăng xuất dựng lại cửa trước với cùng địa chỉ, client, factory; KHÔNG truyền job (người dùng chốt: sau Đăng xuất không tự mở lại job).
+        # Cài đặt đọc lại từ đĩa (settings=None): bản dict ban đầu còn tên đăng nhập mà Đăng xuất vừa xoá.
+        self.app.to_login = lambda root: FrontDoor(root, url=self._url, new_client=self._new_client, app_factory=self._factory)
         return self.app
 
     def _login(self, client: CvatClient, user: str):
@@ -278,7 +283,7 @@ def logout_text(n_sessions: int) -> str:
                 else "• (không có phiên làm việc CVAT nào đã lưu)")
     return ("Đăng xuất EyePin?\n\nSẽ xoá khỏi máy này:\n• khoá đăng nhập CVAT đã nhớ và tên đăng nhập\n" + sessions + "\n\n"
             "Giữ nguyên: phiên của thư mục ảnh và file bạn tự lưu (bản chụp, file XML xuất); công ty yêu cầu xoá thì bạn tự xoá chúng.\n\n"
-            "Chỉ đăng xuất ở máy này, không đăng xuất khỏi CVAT (khoá còn hiệu lực trên CVAT tới khi CVAT tự huỷ). Xong thì EyePin đóng.")
+            "Chỉ đăng xuất ở máy này, không đăng xuất khỏi CVAT (khoá còn hiệu lực trên CVAT tới khi CVAT tự huỷ). Xong thì EyePin về màn đăng nhập.")
 
 
 def open_job_text(job, pins: int) -> str:
@@ -319,9 +324,9 @@ class LoginMixin:
 
     # ---- luồng ----
     def logout(self):
-        """Đăng xuất = dọn dữ liệu CVAT trên máy rồi đóng EyePin. Hỏi trước khi xoá (không có gì chưa gửi: một hộp xác nhận; job đang mở chưa gửi:
+        """Đăng xuất = dọn dữ liệu CVAT trên máy rồi về màn đăng nhập trong cùng cửa sổ (`back_to_login`; chỉ đóng cửa sổ mới thoát). Hỏi trước khi xoá (không có gì chưa gửi: một hộp xác nhận; job đang mở chưa gửi:
         Gửi rồi đăng xuất / Đăng xuất và bỏ công này / Huỷ; job khác còn phiên chưa gửi: liệt kê, Xoá luôn / Huỷ). Gửi lỗi hoặc huỷ thì dừng, không xoá gì.
-        Xoá lỗi file nào thì báo tên file và không đóng. Không bao giờ gọi POST /api/auth/logout."""
+        Xoá lỗi file nào thì báo tên file và ở lại job. Không bao giờ gọi POST /api/auth/logout."""
         self._after_send = None
         if not self.confirm_close_busy():
             return
@@ -370,8 +375,8 @@ class LoginMixin:
                 pass
         failed = cvatlogin.wipe_local(self.settings)
         if failed:
-            self.show_error("Chưa dọn sạch: không xoá hoặc ghi được\n" + "\n".join(failed) + "\n\nChưa đóng EyePin. Đóng chương trình đang giữ các file đó "
+            self.show_error("Chưa dọn sạch: không xoá hoặc ghi được\n" + "\n".join(failed) + "\n\nChưa đăng xuất. Đóng chương trình đang giữ các file đó "
                             "rồi bấm Đăng xuất lại, hoặc xoá chúng bằng tay.")
             self._schedule_autosave()                            # còn làm việc tiếp được: bật lại tự lưu
             return
-        self.shutdown()
+        self.back_to_login()

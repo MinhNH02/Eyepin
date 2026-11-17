@@ -377,12 +377,128 @@ class TestFrontDoor(G.CvatGuiCase):
         self.wait(d.app)
 
 
+class TestLogoutToLogin(G.CvatGuiCase):
+    """Đăng xuất (sau khi dọn) quay về màn đăng nhập trong CÙNG cửa sổ; chỉ đóng cửa sổ mới thoát (người dùng chốt 2026-11-17)."""
+
+    door, pump, log_in = TestFrontDoor.door, TestFrontDoor.pump, TestFrontDoor.log_in
+
+    def setUp(self):
+        super().setUp()
+        self.serve()
+        self.addCleanup(self._unbind_root)
+
+    def _unbind_root(self):
+        for seq in self.root.bind():                                        # App dựng sau cùng của test còn gắn phím trên cửa sổ dùng chung
+            self.root.unbind(seq)
+
+    def test_logout_returns_to_the_login_screen_in_the_same_window(self):
+        d = self.door()
+        self.log_in(d)
+        self.wait(d.app)
+        app = d.app
+        app.ask_logout = lambda: True
+        app.logout()
+        self.root.update()
+        self.assertTrue(self.root.winfo_exists())
+        self.assertEqual(self.root.title(), "EyePin — đăng nhập")
+        self.assertIsNone(app.cvat_client)
+        self.assertIsNone(app.s)
+        self.assertFalse(cvatlogin.login_path().exists())
+        self.assertEqual(sc.load_settings()["cvat"]["user"], "")
+        self.assertNotIn("/api/auth/logout", " ".join(self.srv.calls))
+
+    def test_logout_does_not_reopen_the_job_from_the_command_line(self):
+        d = self.door(job=7)
+        self.log_in(d)
+        self.wait(d.app)
+        made = []
+        d.app.to_login = lambda r, f=d.app.to_login: made.append(f(r)) or made[-1]
+        d.app.ask_logout = lambda: True
+        d.app.logout()
+        self.assertEqual(len(made), 1)
+        self.assertIsNone(made[0].job)                                      # phải đăng nhập lại, và không tự mở job của --job
+        self.assertIsNone(made[0].app)
+
+    def test_logout_leaves_no_orphan_timer_and_second_login_works(self):
+        d = self.door()
+        self.log_in(d)
+        self.wait(d.app)
+        made = []
+        d.app.to_login = lambda r, f=d.app.to_login: made.append(f(r)) or made[-1]     # giữ FrontDoor mới
+        d.app.ask_logout = lambda: True
+        d.app.logout()
+        self.assertEqual(self.root.tk.splitlist(self.root.tk.call("after", "info")), ())
+        errors = []
+        self.root.report_callback_exception = lambda *a: errors.append(a)
+        try:
+            for _ in range(20):
+                self.root.update()
+                time.sleep(0.01)
+        finally:
+            del self.root.report_callback_exception
+        self.assertEqual(errors, [])
+        self.assertEqual(self.root.bind(), ())                              # không còn phím của App cũ trên root
+        self.log_in(made[0])
+        self.assertIsNot(made[0].app, d.app)
+        self.assertEqual(made[0].app.cvat_client.token, "k1")
+        self.wait(made[0].app)
+
+    def test_logout_twice_teardown_is_harmless(self):
+        d = self.door()
+        self.log_in(d)
+        self.wait(d.app)
+        d.app.teardown()
+        d.app.teardown()                                                    # gọi hai lần không lỗi
+        self.assertEqual(self.root.winfo_children(), [])
+        self.assertIsNone(d.app.cvat_client)
+
+    def test_logout_with_failed_wipe_stays_in_the_job(self):
+        d = self.door()
+        self.log_in(d)
+        self.wait(d.app)
+        d.app.ask_logout = lambda: True
+        with mock.patch.object(cvatlogin, "wipe_local", return_value=["x.json"]):
+            d.app.logout()
+        self.root.update()
+        self.assertTrue(d.app.root.winfo_children())
+        self.assertTrue(any("x.json" in e for e in d.app.errors), d.app.errors)
+        self.assertNotEqual(self.root.title(), "EyePin — đăng nhập")
+        self.assertIsNotNone(d.app._autosave_job)
+        self.assertIsNotNone(d.app.cvat_client)
+
+    def test_closing_the_window_after_logout_exits(self):
+        import tkinter as tk
+        from eyepin.gui import App
+        root = tk.Tk()                                                      # cửa sổ riêng: test này huỷ nó
+        root.withdraw()
+        try:
+            app = App(root)
+            app.show_error = lambda text: self.fail(text)
+            before = root.protocol("WM_DELETE_WINDOW")
+            app.ask_logout = lambda: True
+            app.logout()                                                    # phiên thư mục ảnh / cửa sổ trống: cũng về màn đăng nhập
+            root.update()
+            self.assertEqual(root.title(), "EyePin — đăng nhập")
+            after = root.protocol("WM_DELETE_WINDOW")
+            self.assertNotEqual(after, before)
+            root.tk.call(after)                                             # bấm nút X của cửa sổ
+            with self.assertRaises(tk.TclError):
+                root.winfo_exists()
+        finally:
+            try:
+                root.destroy()
+            except tk.TclError:
+                pass
+
+
 class TestLogout(G.CvatGuiCase):
     def setUp(self):
         super().setUp()
         self.app = self.make_app()
-        self.shut = []
-        self.app.shutdown = lambda: self.shut.append(1)               # không đóng cửa sổ Tk dùng chung của test
+        self.shut = []                                                # lần rời job sau khi dọn (về màn đăng nhập)
+        self.app.back_to_login = lambda: self.shut.append(1)          # không dựng lại màn đăng nhập trên cửa sổ Tk dùng chung của test
+        self.closed = []
+        self.app.shutdown = lambda: self.closed.append(1)             # đóng cửa sổ (thoát tiến trình): Đăng xuất không được gọi
         self.asked = []
         self.app.ask_logout = lambda: self.asked.append(1) or self.answer
         self.answer = True
@@ -392,7 +508,7 @@ class TestLogout(G.CvatGuiCase):
         self.assertTrue(cvatlogin.save_login("http://localhost:8080", "minh", "k1", 8))
 
     @win_only
-    def test_logout_forgets_the_key_and_the_user_name_then_shuts_down(self):
+    def test_logout_forgets_the_key_and_the_user_name_then_goes_back_to_login(self):
         self.remember()
         self.app.logout()
         self.assertEqual(self.asked, [1])
@@ -441,6 +557,20 @@ class TestLogout(G.CvatGuiCase):
     def test_logout_works_when_there_is_nothing_remembered(self):
         self.app.logout()
         self.assertEqual(self.shut, [1])
+
+    def test_logout_does_not_shut_the_window(self):
+        self.app.logout()
+        self.assertEqual(self.closed, [])                                  # đóng cửa sổ mới thoát; Đăng xuất chỉ về màn đăng nhập
+        self.assertEqual(self.shut, [1])
+
+    def test_the_logout_texts_say_it_returns_to_the_login_screen(self):
+        self.assertNotIn("EyePin đóng", logout_text(0))
+        self.assertIn("màn đăng nhập", logout_text(0))
+        import inspect
+        from eyepin import gui
+        src = inspect.getsource(gui.App._build)                            # chữ trỏ chuột của nút Đăng xuất (Tooltip không giữ chữ trên nút)
+        self.assertNotIn("rồi đóng EyePin", src)
+        self.assertIn("rồi về màn đăng nhập", src)
 
     def test_the_question_says_what_logout_does_and_does_not_do(self):
         for part in ("khoá đăng nhập", "tên đăng nhập", "máy này", "không đăng xuất khỏi CVAT", "phiên của thư mục ảnh"):
