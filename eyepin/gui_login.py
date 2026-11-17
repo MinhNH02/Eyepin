@@ -290,20 +290,36 @@ class FrontDoor:
 MAX_LISTED = 10
 
 
-def logout_text(n_sessions: int) -> str:
-    """Hộp xác nhận chung (không có công nào chưa gửi): nói rõ xoá gì, giữ gì."""
-    sessions = (f"• {n_sessions} phiên làm việc đã lưu của job CVAT (đều đã gửi lên CVAT)" if n_sessions
-                else "• (không có phiên làm việc CVAT nào đã lưu)")
-    return ("Đăng xuất EyePin?\n\nSẽ xoá khỏi máy này:\n• khoá đăng nhập CVAT đã nhớ và tên đăng nhập\n" + sessions + "\n\n"
-            "Giữ nguyên: phiên của thư mục ảnh và file bạn tự lưu (bản chụp, file XML xuất); công ty yêu cầu xoá thì bạn tự xoá chúng.\n\n"
-            "Chỉ đăng xuất ở máy này, không đăng xuất khỏi CVAT (khoá còn hiệu lực trên CVAT tới khi CVAT tự huỷ). Xong thì EyePin về màn đăng nhập.")
+def logout_text(n_sessions: int, n_folder: int = 0) -> str:
+    """Hộp xác nhận chung (không có công nào chưa gửi): nói rõ xoá gì, giữ gì. `n_sessions`: số phiên job CVAT; `n_folder`: số phiên thư mục ảnh
+    (người dùng chốt 2026-11-17: Đăng xuất xoá cả chúng)."""
+    lines = []
+    if n_sessions:
+        lines.append(f"• {n_sessions} phiên làm việc đã lưu của job CVAT (đều đã gửi lên CVAT)")
+    if n_folder:
+        lines.append(f"• {n_folder} phiên làm việc của thư mục ảnh (ghim chưa xuất ra file sẽ mất)")
+    if not lines:
+        lines.append("• (không có phiên làm việc nào đã lưu)")
+    return ("Đăng xuất EyePin?\n\nSẽ xoá khỏi máy này:\n• khoá đăng nhập CVAT đã nhớ và tên đăng nhập\n" + "\n".join(lines) + "\n\n"
+            "Giữ nguyên: cài đặt (phím tắt, giao diện), ảnh gốc và file bạn tự xuất (bản chụp, file XML) ngoài thư mục EyePin; "
+            "công ty yêu cầu xoá thì bạn tự xoá chúng.\n\n"
+            "Chỉ đăng xuất ở máy này, không đăng xuất khỏi CVAT (khoá còn hiệu lực trên CVAT tới khi CVAT tự huỷ). Xong thì EyePin về màn đăng nhập "
+            "để đăng nhập bằng tài khoản khác; muốn tắt hẳn thì bấm Thoát EyePin.")
+
+
+def folder_text() -> str:
+    """Hộp khi phiên thư mục ảnh đang mở còn thay đổi chưa lưu: không hỏi lưu (bản lưu bị xoá ngay sau đó), chỉ hỏi có tiếp tục không."""
+    return ("Phiên thư mục ảnh đang mở có thay đổi chưa lưu.\n\n"
+            "Đăng xuất sẽ xoá cả phiên của thư mục ảnh đang mở (lưu lúc này cũng vô ích: bản lưu bị xoá ngay sau đó), cùng mọi phiên làm việc "
+            "đã lưu khác, khoá đăng nhập và tên đăng nhập trên máy này. Cần giữ ghim thì Huỷ, xuất file import (Ctrl+Shift+S) rồi đăng xuất lại.\n\n"
+            "Tiếp tục?")
 
 
 def open_job_text(job, pins: int) -> str:
     """Hộp khi job đang mở còn công chưa gửi: ba lựa chọn Gửi / Bỏ / Huỷ."""
     name = f"Job #{job}" if job is not None else "Job đang mở"
     return (f"{name} có {pins} frame ghim CHƯA gửi lên CVAT.\n\n"
-            "Đăng xuất xoá khoá đăng nhập, tên đăng nhập và mọi phiên làm việc CVAT đã lưu trên máy này, kể cả công này.\n\n"
+            "Đăng xuất xoá khoá đăng nhập, tên đăng nhập và mọi phiên làm việc đã lưu trên máy này (job CVAT và thư mục ảnh), kể cả công này.\n\n"
             "Có: gửi lên CVAT rồi đăng xuất\nKhông: đăng xuất và bỏ công này\nHuỷ: ở lại làm tiếp")
 
 
@@ -325,7 +341,11 @@ class LoginMixin:
 
     # ---- hộp hỏi (thay được trong test) ----
     def ask_logout(self) -> bool:
-        return bool(messagebox.askyesno("Đăng xuất", logout_text(len(cvatlogin.cvat_session_files())), icon="warning", default="no", parent=self.root))
+        text = logout_text(len(cvatlogin.cvat_session_files()), len(cvatlogin.folder_session_files()))
+        return bool(messagebox.askyesno("Đăng xuất", text, icon="warning", default="no", parent=self.root))
+
+    def ask_logout_folder(self) -> bool:
+        return bool(messagebox.askyesno("Đăng xuất", folder_text(), icon="warning", default="no", parent=self.root))
 
     def ask_logout_open_job(self, job, pins: int) -> str:
         """"send" (Gửi rồi đăng xuất) | "discard" (Đăng xuất và bỏ công này) | "cancel" (mặc định)."""
@@ -337,15 +357,20 @@ class LoginMixin:
 
     # ---- luồng ----
     def logout(self):
-        """Đăng xuất = dọn dữ liệu CVAT trên máy rồi về màn đăng nhập trong cùng cửa sổ (`back_to_login`; chỉ đóng cửa sổ mới thoát). Hỏi trước khi xoá (không có gì chưa gửi: một hộp xác nhận; job đang mở chưa gửi:
-        Gửi rồi đăng xuất / Đăng xuất và bỏ công này / Huỷ; job khác còn phiên chưa gửi: liệt kê, Xoá luôn / Huỷ). Gửi lỗi hoặc huỷ thì dừng, không xoá gì.
+        """Đăng xuất = dọn dữ liệu làm việc trên máy (khoá, tên đăng nhập, MỌI phiên đã lưu kể cả thư mục ảnh; giữ cài đặt) rồi về màn đăng nhập trong
+        cùng cửa sổ (`back_to_login`; chỉ đóng cửa sổ / Thoát EyePin mới thoát). Hỏi trước khi xoá (không có gì chưa gửi: một hộp xác nhận; phiên thư
+        mục ảnh đang mở còn thay đổi: báo phiên đó sẽ bị xoá, Tiếp tục / Huỷ; job đang mở chưa gửi: Gửi rồi đăng xuất / Đăng xuất và bỏ công này /
+        Huỷ; job khác còn phiên chưa gửi: liệt kê, Xoá luôn / Huỷ). Gửi lỗi hoặc huỷ thì dừng, không xoá gì.
         Xoá lỗi file nào thì báo tên file và ở lại job. Không bao giờ gọi POST /api/auth/logout."""
         self._after_send = None
         if not self.confirm_close_busy(logout=True):
             return
         s = self.s
         cvat_open = s is not None and s.cvat is not None
-        if not cvat_open and not self.confirm_close(logout=True):           # phiên thư mục ảnh: hỏi lưu như khi đóng cửa sổ; job CVAT thì bản lưu sắp bị xoá nên khỏi hỏi
+        if not cvat_open and s is not None and s.dirty:     # phiên thư mục ảnh còn thay đổi: không hỏi lưu (bản lưu sắp bị xoá), chỉ hỏi tiếp tục
+            if not self.ask_logout_folder():
+                return
+            self._logout_continue(asked=True)
             return
         if cvat_open and s.unsent:
             choice = self.ask_logout_open_job(s.cvat.get("job"), sum(len(L.pins) for L in s.layers))

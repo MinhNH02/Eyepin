@@ -240,15 +240,18 @@ class TestLogoutFlow(LogoutCase):
 
     # ---------- không có gì chưa gửi ----------
     @win_only
-    def test_clean_logout_wipes_the_key_the_cvat_sessions_and_the_user_but_nothing_else(self):
+    def test_clean_logout_wipes_the_key_every_session_and_the_user_but_keeps_settings(self):
         app = self.logout_app()
         sent = self.other_session("sent.json", 6, unsent=False)
         folder = self.folder_session()
+        app.settings["workspace"]["autosave"] = False                      # một cài đặt của người dùng: phải còn sau Đăng xuất
         self.remember()
         app.logout()
         self.assertEqual(self.asked, [("generic",)])                       # không có gì chưa gửi: chỉ một hộp xác nhận
         self.assertFalse(sent.exists())
-        self.assertTrue(folder.exists())                                   # phiên thư mục ảnh không bị xoá
+        self.assertFalse(folder.exists())                                  # người dùng chốt 2026-11-17: phiên thư mục ảnh cũng bị xoá
+        self.assertTrue(sc.settings_path().exists())
+        self.assertIs(json.loads(sc.settings_path().read_text(encoding="utf-8"))["workspace"]["autosave"], False)
         self.assertFalse(cvatlogin.login_path().exists())
         self.assertEqual(app.settings["cvat"], {"url": self.srv.url, "user": ""})
         self.assertEqual(json.loads(sc.settings_path().read_text(encoding="utf-8"))["cvat"]["user"], "")
@@ -275,17 +278,36 @@ class TestLogoutFlow(LogoutCase):
         app.logout()
         self.assertNotIn(("close",), self.asked)                           # bản lưu sắp bị xoá nên hỏi "lưu rồi thoát" là vô nghĩa
 
-    def test_an_open_folder_session_is_asked_like_closing_the_window(self):
+    def test_an_open_folder_session_with_changes_is_told_it_will_be_wiped_not_asked_to_save(self):
         app = self.logout_app(open_job=False)
         sent = self.other_session("sent.json", 6, unsent=False)
+        folder = self.folder_session()
         from types import SimpleNamespace
         app.s = SimpleNamespace(cvat=None, unsent=False, dirty=True, layers=[])
-        app.confirm_close = lambda **kw: self.asked.append(("close",)) or False
+        app.confirm_close = lambda **kw: self.asked.append(("close",)) or True
+        app.ask_logout_folder = lambda: self.asked.append(("folder",)) or self.answers.get("folder", False)
         app.logout()
-        self.assertEqual(self.asked, [("close",)])
-        self.assertTrue(sent.exists())
+        self.assertEqual(self.asked, [("folder",)])                        # không hỏi "lưu rồi …": bản lưu sẽ bị xoá ngay sau đó
+        self.assertTrue(sent.exists() and folder.exists())
         self.assertEqual(self.shut, [])
+        self.asked.clear()
+        self.answers["folder"] = True
+        app.logout()
+        self.assertEqual(self.asked, [("folder",)])                        # đã đồng ý ở hộp này: không hỏi xác nhận chung lần nữa
+        self.assertFalse(sent.exists() or folder.exists())
+        self.assertEqual(self.shut, [1])
         app.s = None
+
+    def test_the_folder_question_says_the_open_folder_session_is_wiped(self):
+        app = self.logout_app(open_job=False)
+        texts = []
+        with mock.patch("tkinter.messagebox.askyesno", side_effect=lambda title, text, **kw: texts.append((title, text, kw.get("default"))) or False):
+            self.assertFalse(app.ask_logout_folder())
+        title, text, default = texts[0]
+        self.assertEqual((title, default), ("Đăng xuất", "no"))
+        self.assertIn("xoá cả phiên của thư mục ảnh đang mở", text)
+        self.assertIn("Tiếp tục?", text)
+        self.assertNotIn("lưu rồi", text)
 
     def test_autosave_is_stopped_before_wiping_so_it_cannot_rewrite_a_deleted_file(self):
         app = self.logout_app()
@@ -530,10 +552,13 @@ class TestRealQuestions(LogoutCase):
 class TestDialogTexts(unittest.TestCase):
     def test_plain_question_says_what_goes_and_what_stays(self):
         from eyepin.gui_login import logout_text
-        text = logout_text(3)
-        for part in ("khoá đăng nhập", "tên đăng nhập", "3 phiên làm việc", "không đăng xuất khỏi CVAT", "máy này", "phiên của thư mục ảnh", "file bạn tự lưu"):
+        text = logout_text(3, 2)
+        for part in ("khoá đăng nhập", "tên đăng nhập", "3 phiên làm việc", "2 phiên làm việc của thư mục ảnh", "không đăng xuất khỏi CVAT",
+                     "máy này", "cài đặt", "file bạn tự xuất", "màn đăng nhập"):
             self.assertIn(part, text)
+        self.assertNotIn("Giữ nguyên: phiên của thư mục ảnh", text)
         self.assertNotIn("0 phiên", logout_text(0))
+        self.assertNotIn("0 phiên", logout_text(0, 0))
         self.assertIn("không có phiên", logout_text(0))
 
     def test_open_job_question_names_the_job_and_the_three_answers(self):

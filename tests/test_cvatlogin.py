@@ -222,15 +222,27 @@ class SessionFilesTests(unittest.TestCase):
         self.write("a.json", cvat_state(5, unsent=True, frames=(0, 3), layers=2))
         self.assertEqual(L.unsent_sessions()[0].pins, 4)
 
-    def test_wipe_removes_cvat_sessions_and_the_user_name_but_keeps_the_rest(self):
+    def test_folder_sessions_are_every_other_session_file(self):
+        self.write("aaa.json", cvat_state(7))
+        f = self.write("folder.json", folder_state())
+        bad = self.write("corrupt.json", "{{ không phải json")
+        self.write("notes.txt", "không phải file phiên")
+        self.assertEqual(L.folder_session_files(), [bad, f])
+
+    def test_wipe_removes_every_session_and_the_user_name_but_keeps_settings(self):
+        """Người dùng chốt 2026-11-17: Đăng xuất xoá cả phiên thư mục ảnh; giữ settings.json; chỉ đụng thư mục EyePin."""
         a = self.write("a.json", cvat_state(5, unsent=True))
         b = self.write("b.json", cvat_state(6, unsent=False))
         folder = self.write("folder.json", folder_state())
+        tmp = self.write("folder.json.tmp", "{")                                  # bản ghi dở của lần lưu bị ngắt
+        other = self.write("notes.txt", "không phải file phiên")
         st = sc.load_settings()
         st["cvat"] = {"url": "http://localhost:8080", "user": "minh"}
+        st["workspace"]["autosave"] = False
         self.assertEqual(L.wipe_local(st), [])
-        self.assertFalse(a.exists() or b.exists())
-        self.assertTrue(folder.exists())
+        self.assertFalse(a.exists() or b.exists() or folder.exists() or tmp.exists())
+        self.assertTrue(other.exists())                                           # chỉ xoá file phiên
+        self.assertIs(json.loads(sc.settings_path().read_text(encoding="utf-8"))["workspace"]["autosave"], False)
         self.assertEqual(st["cvat"], {"url": "http://localhost:8080", "user": ""})
         self.assertEqual(json.loads(sc.settings_path().read_text(encoding="utf-8"))["cvat"], {"url": "http://localhost:8080", "user": ""})
 

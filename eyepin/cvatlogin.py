@@ -202,6 +202,12 @@ def cvat_session_files() -> list[Path]:
     return [p for p, _ in _cvat_sessions()]
 
 
+def folder_session_files() -> list[Path]:
+    """Mọi file phiên còn lại trong thư mục phiên (phiên của thư mục ảnh, kể cả file hỏng không đọc được): Đăng xuất cũng xoá chúng."""
+    cvat = set(cvat_session_files())
+    return [p for p in sorted(sessions_dir().glob("*.json")) if p not in cvat]
+
+
 def _pin_count(data: dict) -> int:
     parts = data.get("layers")
     parts = parts if isinstance(parts, list) else [data]
@@ -223,11 +229,12 @@ def unsent_sessions() -> list[UnsentSession]:
 
 
 def wipe_local(settings: dict) -> list[str]:
-    """Đăng xuất = dọn dữ liệu CVAT trên máy: xoá mọi file phiên của job CVAT, file khoá đã nhớ, và tên đăng nhập trong `settings` (giữ địa chỉ; đã lưu
-    xuống đĩa). Không đụng phiên của thư mục ảnh và file người dùng tự lưu. Việc nào lỗi cũng làm hết phần còn lại; trả danh sách file không xoá/ghi
-    được (rỗng = sạch), để nơi gọi báo tên file chứ không giả vờ đã sạch."""
+    """Đăng xuất = dọn dữ liệu làm việc trên máy: xoá MỌI file phiên (job CVAT và thư mục ảnh — người dùng chốt 2026-11-17 — cùng bản ghi dở
+    `*.json.tmp`), file khoá đã nhớ, và tên đăng nhập trong `settings` (giữ địa chỉ và mọi cài đặt khác; đã lưu xuống đĩa). Chỉ đụng thư mục EyePin
+    (`~/.eyepin`): không đụng ảnh gốc hay file người dùng tự xuất. Việc nào lỗi cũng làm hết phần còn lại; trả danh sách file không xoá/ghi được
+    (rỗng = sạch), để nơi gọi báo tên file chứ không giả vờ đã sạch."""
     failed = []
-    for path in cvat_session_files():
+    for path in [*cvat_session_files(), *folder_session_files(), *sorted(sessions_dir().glob("*.json.tmp"))]:
         try:
             path.unlink()
         except FileNotFoundError:

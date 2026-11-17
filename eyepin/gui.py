@@ -281,7 +281,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         self.filter_btn = IconButton(top, "filter", popup(flt_menu), kind="bar", size=BAR_SIZE,
                                      tip=lambda: f"Lọc frame (đang: {Session.FILTERS[self.filter]}). {self.kl('search_prev')}/{self.kl('search_next')} nhảy tới frame thoả")
         info_btn = B("info", self.show_info, f"Thông tin job ({self.kl('info')})")
-        self.logout_btn = B("logout", self.logout, "Đăng xuất: xoá đăng nhập đã nhớ và các phiên làm việc CVAT đã lưu trên máy này, rồi về màn đăng nhập "
+        self.logout_btn = B("logout", self.logout, "Đăng xuất: xoá đăng nhập đã nhớ và mọi phiên làm việc đã lưu (job CVAT và thư mục ảnh) trên máy này, giữ cài đặt, rồi về màn đăng nhập "
                             "(không thoát EyePin; hỏi trước nếu còn công chưa gửi)")
         self.quit_btn = B("quit", lambda: self.on_close(),"Thoát EyePin: đóng cửa sổ như nút X (hỏi lưu nếu còn thay đổi); không xoá gì, "
                           "đăng nhập đã nhớ và phiên đã lưu vẫn giữ")
@@ -670,19 +670,18 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
             self.save_work(auto=True)
         self._schedule_autosave()
 
-    def confirm_close(self, logout: bool = False) -> bool:
-        """Hỏi trước khi thoát (hoặc Đăng xuất, `logout=True`: cùng câu hỏi, chữ nói "đăng xuất") khi còn thay đổi chưa lưu.
-        True = được rời phiên, False = ở lại."""
+    def confirm_close(self) -> bool:
+        """Hỏi trước khi thoát khi còn thay đổi chưa lưu. True = được đóng cửa sổ, False = ở lại. (Đăng xuất không dùng hộp này: bản lưu của phiên
+        sẽ bị xoá nên hỏi lưu là vô nghĩa, xem `LoginMixin.ask_logout_folder`.)"""
         if not (self.s and self.s.dirty):
             return True
-        title, verb = ("Đăng xuất", "đăng xuất") if logout else ("Thoát EyePin", "thoát")
         if self.scratch:                                     # mở bằng --pins: không có file phiên để lưu
             return bool(messagebox.askyesno(
-                title, f"Có thay đổi chưa lưu. Đang mở bằng --pins nên tool không ghi file phiên: {verb} sẽ mất các thay đổi này "
-                f"(xuất file import bằng Ctrl+Shift+S nếu cần giữ).\n\nVẫn {verb}?",
+                "Thoát EyePin", "Có thay đổi chưa lưu. Đang mở bằng --pins nên tool không ghi file phiên: thoát sẽ mất các thay đổi này "
+                "(xuất file import bằng Ctrl+Shift+S nếu cần giữ).\n\nVẫn thoát?",
                 icon="warning", default="no", parent=self.root))
         ans = messagebox.askyesnocancel(
-            title, f"Có thay đổi chưa lưu.\n\nCó: lưu rồi {verb}\nKhông: {verb}, bỏ thay đổi\nHuỷ: ở lại làm tiếp",
+            "Thoát EyePin", "Có thay đổi chưa lưu.\n\nCó: lưu rồi thoát\nKhông: thoát, bỏ thay đổi\nHuỷ: ở lại làm tiếp",
             icon="warning", default="yes", parent=self.root)
         if ans is None:
             return False

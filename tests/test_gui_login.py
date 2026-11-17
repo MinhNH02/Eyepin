@@ -525,11 +525,13 @@ class TestLogoutToLogin(G.CvatGuiCase):
         texts = []
         app.busy = "Đang gửi lên CVAT…"
         app.s = SimpleNamespace(cvat=None, unsent=False, dirty=True, layers=[])
-        with mock.patch("eyepin.gui.messagebox.askyesno", side_effect=lambda t, m, **kw: texts.append(t + " " + m) or True), \
+        answers = iter([True, False])                                       # bận: vẫn đăng xuất; phiên thư mục ảnh sẽ bị xoá: không tiếp tục
+        with mock.patch("eyepin.gui.messagebox.askyesno", side_effect=lambda t, m, **kw: texts.append(t + " " + m) or next(answers)), \
                 mock.patch("eyepin.gui.messagebox.askyesnocancel", side_effect=lambda t, m, **kw: texts.append(t + " " + m) or None):
-            app.logout()                                                    # bận → hỏi; còn thay đổi chưa lưu → hỏi (Huỷ)
+            app.logout()
         app.busy, app.s = None, None
         self.assertEqual(len(texts), 2, texts)
+        self.assertIn("xoá cả phiên của thư mục ảnh", texts[1])
         for t in texts:
             self.assertIn("Đăng xuất", t)
             self.assertNotIn("thoát", t.lower())
@@ -613,9 +615,12 @@ class TestLogout(G.CvatGuiCase):
 
     @win_only
     def test_cancelling_at_the_unsaved_changes_question_keeps_everything(self):
+        from types import SimpleNamespace
         self.remember()
-        self.app.confirm_close = lambda **kw: False
+        self.app.s = SimpleNamespace(cvat=None, unsent=False, dirty=True, layers=[])     # phiên thư mục ảnh còn thay đổi chưa lưu
+        self.app.ask_logout_folder = lambda: False                       # "phiên này sẽ bị xoá. Tiếp tục?" → Không
         self.app.logout()
+        self.app.s = None
         self.assertTrue(cvatlogin.login_path().exists())
         self.assertEqual(self.app.settings["cvat"]["user"], "minh")
         self.assertEqual(self.shut, [])
@@ -658,8 +663,8 @@ class TestLogout(G.CvatGuiCase):
         self.assertIn("rồi về màn đăng nhập", src)
 
     def test_the_question_says_what_logout_does_and_does_not_do(self):
-        for part in ("khoá đăng nhập", "tên đăng nhập", "máy này", "không đăng xuất khỏi CVAT", "phiên của thư mục ảnh"):
-            self.assertIn(part, logout_text(2))
+        for part in ("khoá đăng nhập", "tên đăng nhập", "máy này", "không đăng xuất khỏi CVAT", "phiên làm việc của thư mục ảnh", "cài đặt"):
+            self.assertIn(part, logout_text(2, 1))
 
     def test_menu_has_the_logout_entry(self):
         labels = [self.app._menu.entrycget(i, "label") for i in range(self.app._menu.index("end") + 1)
