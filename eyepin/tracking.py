@@ -95,6 +95,16 @@ def track_forward(get_gray: Callable[[int], np.ndarray], start: int, end: int, p
     return out
 
 
+def track_backward(get_gray: Callable[[int], np.ndarray], start: int, end: int, pins: dict[int, Point], **kw) -> list[TrackResult]:
+    """Bám lùi từ frame `start` (có đủ điểm `pins`) về frame `end` (tính cả end, end <= start): cùng phép so khớp với
+    `track_forward` nhưng đi trên dãy frame đảo ngược. Kết quả theo thứ tự start, start-1, ..., end và mang số frame thật.
+
+    Chỉ dùng để so sánh trong báo cáo độ chính xác (`evaluate.py`): nhãn của tool vẫn chỉ bám tiến (quy tắc đã chốt).
+    """
+    seq = track_forward(lambda k: get_gray(start - k), 0, start - end + 1, pins, **kw)
+    return [TrackResult(start - r.frame, r.points, r.score, r.scores) for r in seq]
+
+
 def propagate(get_gray: Callable[[int], np.ndarray], n_frames: int, pins: dict[int, dict[int, Point]],
               **kw) -> tuple[dict[int, TrackResult], dict[int, TrackResult]]:
     """Mỗi frame ghim bám tiến tới frame ghim kế tiếp (hoặc hết job).

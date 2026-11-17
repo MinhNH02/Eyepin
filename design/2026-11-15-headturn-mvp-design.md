@@ -1,6 +1,6 @@
 # EyePin: phát hiện quay đầu, báo cáo độ chính xác, thử bám hai chiều (bản 2)
 
-Ngày 2026-11-16, thay bản 1 ngày 2026-11-15. Hạn demo: chiều 2026-11-16. Trạng thái: **MVP 1 đã xây ngày 2026-11-16** (kế hoạch `design/2026-11-16-headturn-mvp1-plan.md`, `eyepin/headturn.py`); MVP 2 đã xây cùng ngày (`eyepin/evaluate.py`, hai cách đoán: đường thẳng CVAT và bám tiến); MVP 3 chưa xây. Người dùng chưa duyệt chính thức mục 15 (đo model).
+Ngày 2026-11-16, thay bản 1 ngày 2026-11-15. Hạn demo: chiều 2026-11-16. Trạng thái: **MVP 1 đã xây ngày 2026-11-16** (kế hoạch `design/2026-11-16-headturn-mvp1-plan.md`, `eyepin/headturn.py`); MVP 2 đã xây cùng ngày (`eyepin/evaluate.py`, hai cách đoán: đường thẳng CVAT và bám tiến); MVP 3 đã xây ngày 2026-11-17 (cột thứ ba của báo cáo, chỉ để so sánh), cùng lúc báo cáo lấy IoU vùng mắt làm chỉ số chính (xem `design/2026-11-17-interp-iou-research.md`). Người dùng chưa duyệt chính thức mục 15 (đo model).
 Căn cứ: hội thoại 2026-11-15/16, báo cáo `C:\Users\minhf\reports\Thuật toán keypoint cho nhãn mắt.md`, và số đo ở mục 2 (tái lập bằng `python spike\headturn_spike.py`).
 
 ## 1. Ý định và lý do

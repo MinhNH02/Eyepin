@@ -8,7 +8,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from eyepin.geometry import EYES  # noqa: E402
-from eyepin.tracking import pin_jump, propagate, reduce_keyframes, track_forward  # noqa: E402
+from eyepin.tracking import pin_jump, propagate, reduce_keyframes, track_backward, track_forward  # noqa: E402
 from test_geometry import lens_eye  # noqa: E402
 
 W, H, N = 320, 160, 60
@@ -86,6 +86,20 @@ class TrackTests(unittest.TestCase):
         pins = {0: pins_at(0), 30: {i: (x + 4, y) for i, (x, y) in pins_at(30).items()}}
         _, arrival = propagate(self.get, N, pins)
         self.assertAlmostEqual(pin_jump(arrival[30], pins[30]), 4.0, delta=1.0)
+
+    def test_backward_follows_motion_and_keeps_real_frame_numbers(self):
+        res = track_backward(self.get, 50, 15, pins_at(50))
+        self.assertEqual([r.frame for r in res], list(range(50, 14, -1)))      # 50, 49, ..., 15 (tính cả frame cuối)
+        self.assertEqual(res[0].points, pins_at(50))
+        self.assertEqual(res[0].score, 1.0)
+        worst = max(math.dist(r.points[i], pins_at(r.frame)[i]) for r in res for i in r.points)
+        self.assertLess(worst, 1.0)
+
+    def test_backward_tracks_only_the_eyes_it_is_given(self):
+        one = {i: p for i, p in pins_at(40).items() if i in EYES["matphai"].ids}
+        res = track_backward(self.get, 40, 30, one)
+        self.assertEqual(set(res[-1].scores), {"matphai"})
+        self.assertEqual(set(res[-1].points), set(EYES["matphai"].ids))
 
 
 class ReduceKeyframesTests(unittest.TestCase):
