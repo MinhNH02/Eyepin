@@ -113,10 +113,34 @@ class CvatClient:
             if e.status == 400:
                 raise CvatError("Sai tên đăng nhập hoặc mật khẩu.", 400) from e
             raise
-        key = r.json().get("key")
+        try:
+            data = r.json()
+        except ValueError as e:                      # 200 nhưng không phải JSON (trang HTML của proxy...): không để "Expecting value" lọt ra giao diện
+            raise CvatError("CVAT trả dữ liệu không đọc được khi đăng nhập (không phải JSON). Kiểm tra lại địa chỉ CVAT.") from e
+        key = data.get("key") if isinstance(data, dict) else None
         if not key:
             raise CvatError("CVAT không trả khoá đăng nhập.")
         self._s.headers["Authorization"] = "Token " + key
+
+    @property
+    def token(self) -> str | None:
+        """Khoá đăng nhập đang dùng (sau `login` hoặc `use_token`), hoặc None. Chỉ để `eyepin.cvatlogin` nhớ qua lần mở tool; không in ra, không ghi log."""
+        auth = self._s.headers.get("Authorization") or ""
+        return auth[len("Token "):] if auth.startswith("Token ") and len(auth) > len("Token ") else None
+
+    def use_token(self, token: str) -> None:
+        """Dùng một khoá đã có (đã nhớ từ lần trước) thay cho đăng nhập bằng mật khẩu. Chưa biết khoá còn hiệu lực không: gọi `whoami()` để thử."""
+        if not isinstance(token, str) or not token.strip() or any(c.isspace() for c in token):
+            raise ValueError("Khoá đăng nhập không hợp lệ.")
+        self._s.headers["Authorization"] = "Token " + token
+
+    def whoami(self) -> str:
+        """Tên người dùng đang đăng nhập (`GET /api/users/self`): cách nhẹ nhất để biết khoá còn dùng được không. Khoá hết hạn hoặc bị huỷ → `LoginNeeded`."""
+        d = self._json("GET", "/api/users/self")
+        name = d.get("username") if isinstance(d, dict) else None
+        if not isinstance(name, str) or not name:
+            raise CvatError("CVAT không cho biết tên người dùng đang đăng nhập.")
+        return name
 
     def tasks(self) -> list[dict]:
         return [{"id": t["id"], "name": t.get("name", ""), "size": t.get("size", 0)} for t in self._paged("/api/tasks", {})]

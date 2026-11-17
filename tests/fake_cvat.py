@@ -28,6 +28,7 @@ Công tắc (thuộc tính, đổi được giữa chừng):
     redirect_job        True: GET /api/jobs/{id} trả 302 sang http://example.com/ (kiểm client không đi theo)
     lose_non_eye_on_import  True: import xong thì JSON annotations của job mất một đối tượng không phải mắt (shape trước, rồi track)
     password            mật khẩu đúng (mặc định "pw"; sai -> 400); key trả về là `token` (mặc định "k1")
+    username            tên trả về ở GET /api/users/self (mặc định "minh"; "" = server trả dữ liệu thiếu tên)
 Xác thực như CVAT thật (cvat/settings/base.py, DEFAULT_AUTHENTICATION_CLASSES: Token rồi Session): đăng nhập đúng trả `key` VÀ đặt cookie
     `sessionid`, `csrftoken` (dj-rest-auth SESSION_LOGIN mặc định bật). Có header Authorization thì chỉ xét khoá (sai -> 401). Không có header
     mà có cookie phiên hợp lệ thì yêu cầu được xác thực bằng phiên; khi đó POST (kể cả POST /api/auth/login) phải kèm header X-CSRFToken
@@ -102,6 +103,7 @@ class FakeCvat:
         self.polls_before_finish = 1
         self.page_size = 100
         self.password = "pw"
+        self.username = "minh"
         self._sessions: dict[str, str] = {}   # sessionid -> csrftoken của các lần đăng nhập thành công
         self.requests, self.calls = [], Counter()
         self.export_formats, self.export_query, self.import_formats, self.frame_query = [], [], [], []
@@ -199,6 +201,8 @@ class FakeCvat:
                           cookies=("sessionid=%s; Path=/; HttpOnly; SameSite=Lax" % sid, "csrftoken=%s; Path=/; SameSite=Lax" % csrf))
 
     def _route(self, h, method, path, q, body):
+        if path == "/api/users/self":
+            return self._send(h, 200, {"id": 1, "username": self.username})
         if path == "/api/tasks":
             tasks = {}
             for j in self.jobs.values():

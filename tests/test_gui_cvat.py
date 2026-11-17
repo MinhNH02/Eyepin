@@ -433,16 +433,13 @@ class TestBusy(CvatGuiCase):
         gate = threading.Event()
         app._run_bg(lambda: gate.wait(10), lambda res, err: None, "Đang gửi thử…")
         app.notice = ""
-        with mock.patch.object(app.tree, "identify_region", return_value="cell"), mock.patch.object(app.tree, "identify_column", return_value="#2"),                 mock.patch.object(app.tree, "identify_row", return_value="eye:mattrai"):
-            result = app.on_tree_click(Ev(5, 5))
-        self.assertEqual(result, "break")
+        app.tree.buttons("eye:mattrai")["keyframe"]._click(None)            # ★ (nút Keyframe) trên thẻ của mattrai
         self.assertEqual({f: dict(p) for f, p in s.pins.items()}, before)
         self.assertEqual({l: list(s.eye_keyframes(l)) for l in EYES}, keys)
         self.assertIn("Đang gửi thử…", app.notice)
         gate.set()
         self.wait(app)
-        with mock.patch.object(app.tree, "identify_region", return_value="cell"), mock.patch.object(app.tree, "identify_column", return_value="#2"),                 mock.patch.object(app.tree, "identify_row", return_value="eye:mattrai"):
-            app.on_tree_click(Ev(5, 5))
+        app.tree.buttons("eye:mattrai")["keyframe"]._click(None)
         self.assertIn(3, s.eye_keyframes("mattrai"))                          # xong việc nền: bấm ★ lại hoạt động
 
     def test_job_started_while_the_frame_read_fails_still_clears_busy(self):

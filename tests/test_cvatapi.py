@@ -263,5 +263,63 @@ class TestCvatApi(CvatApiBase):
         self.assertEqual(self.srv.calls["POST /api/auth/login"], 1)
 
 
+class TestToken(CvatApiBase):
+    """Khoá đăng nhập để nhớ qua lần mở tool (eyepin.cvatlogin): đọc ra sau đăng nhập, nạp lại, và thử xem còn dùng được không."""
+
+    def test_token_is_none_before_login_and_the_key_after(self):
+        self.assertIsNone(self.cl.token)
+        self.login()
+        self.assertEqual(self.cl.token, "k1")
+
+    def test_use_token_sets_the_header_and_needs_no_login(self):
+        self.cl.use_token("k1")
+        self.assertEqual(self.cl.token, "k1")
+        self.cl.tasks()
+        self.assertEqual(self.srv.requests[-1]["headers"]["Authorization"], "Token k1")
+        self.assertEqual(self.srv.calls["POST /api/auth/login"], 0)
+
+    def test_use_token_refuses_empty_or_spaced_keys(self):
+        for bad in ("", "   ", "a b", "a\nb", None, 5):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                self.cl.use_token(bad)
+        self.assertIsNone(self.cl.token)
+
+    def test_use_token_replaces_the_key_of_an_earlier_login(self):
+        self.login()
+        self.srv.token = "k9"
+        self.cl.use_token("k9")
+        self.assertEqual(self.cl.token, "k9")
+        self.cl.tasks()
+
+    def test_whoami_returns_the_username_with_a_login_or_a_loaded_token(self):
+        self.login()
+        self.assertEqual(self.cl.whoami(), "minh")
+        other = CvatClient(self.srv.url, timeout=5)
+        self.addCleanup(other.close)
+        other.use_token(self.cl.token)
+        self.assertEqual(other.whoami(), "minh")
+
+    def test_whoami_with_a_revoked_or_missing_token_raises_login_needed(self):
+        with self.assertRaises(LoginNeeded):
+            self.cl.whoami()
+        self.cl.use_token("khoa-da-huy")
+        with self.assertRaises(LoginNeeded):
+            self.cl.whoami()
+
+    def test_whoami_with_an_unreadable_answer_raises_cvat_error(self):
+        self.login()
+        self.srv.username = ""
+        with self.assertRaises(CvatError) as cm:
+            self.cl.whoami()
+        self.assertNotIsInstance(cm.exception, LoginNeeded)
+
+    def test_server_down_is_a_cvat_error_not_login_needed(self):
+        self.login()
+        self.srv.stop()
+        with self.assertRaises(CvatError) as cm:
+            self.cl.whoami()
+        self.assertNotIsInstance(cm.exception, LoginNeeded)
+
+
 if __name__ == "__main__":
     unittest.main()

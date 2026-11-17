@@ -343,6 +343,7 @@ def send(session: Session, client: CvatClient, plan: SendPlan) -> SendResult:
     if mismatches:
         return fail(f"Đã gửi, nhưng CVAT lưu khác tool ở {len(mismatches)} chỗ. Xem danh sách và kiểm trên CVAT; có thể khôi phục bản trước khi gửi.",
                     mismatches)
+    session.unsent = False                                    # chỉ khi gửi xong VÀ đối chiếu khớp: gửi lệch thì giữ "chưa gửi" (Đăng xuất sẽ hỏi)
     return SendResult(True, f"Đã gửi {plan.keyframes} keyframe mắt lên job #{plan.job_id}; CVAT lưu khớp với EyePin.", [], snap)
 
 

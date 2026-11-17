@@ -18,11 +18,11 @@ from tkinter import filedialog, messagebox, ttk
 import cv2
 import numpy as np
 
-from . import cvatsync, qc, theme
+from . import cvatsync, qc
 from .cvatapi import CvatClient, CvatError, LoginNeeded
 from .cvatsource import open_job
 from .geometry import EYES
-from .icons import IconButton
+from .icons import BAR_SIZE, IconButton
 from .session import QC_MSG
 
 DEFAULT_URL = "http://localhost:8080"
@@ -34,11 +34,13 @@ RESTORE_LIMIT = ("Giới hạn của việc khôi phục: bản chụp là bản
 
 def edit_command(fn):
     """Lệnh sửa nhãn: ở chế độ QC hoặc khi đang có việc nền thì không chạy mà báo lý do; ValueError QC_MSG lọt ra từ Session cũng thành thông báo.
-    Lỗi CVAT khi bám lại (đọc ảnh từ CVAT trên luồng chính) thành thông báo, không thành traceback (xem `net_safe`)."""
+    Lỗi CVAT khi bám lại (đọc ảnh từ CVAT trên luồng chính) thành thông báo, không thành traceback (xem `net_safe`).
+    Lệnh tới giữa lúc đang giữ chuột kéo nhãn (Ctrl+Z, Del, Ctrl+N...) thì huỷ lần kéo đó trước: nó được tính trên dữ liệu trước lệnh (`_cancel_drag`)."""
     @functools.wraps(fn)
     def wrapper(self, *args, **kw):
         if self.s is not None and self._edit_blocked():
             return None
+        self._cancel_drag()
         try:
             return fn(self, *args, **kw)
         except CvatError as err:
@@ -71,6 +73,7 @@ class CvatMixin:
         self.cvat_client: CvatClient | None = None   # khoá đăng nhập nằm trong đối tượng này, chỉ trong RAM
         self.busy: str | None = None                 # "Đang …" khi có việc nền: chặn sửa nhãn
         self._cvat_after_login = None                # việc làm tiếp sau khi đăng nhập lại (401 giữa chừng)
+        self._after_send = None                      # việc chờ kết quả lần gửi (Đăng xuất bấm "Gửi rồi đăng xuất"): gọi `hook(ok)` một lần khi gửi có kết quả cuối
         self._cvat_job: int | None = None            # job tự mở sau khi đăng nhập (từ --cvat --job)
         self._cvat_ui: dict = {}
         self._cvat_menu: dict[str, int] = {}
@@ -85,11 +88,15 @@ class CvatMixin:
         self._cvat_menu["send"] = menu.index("end")
         menu.add_command(label="Xoá nhãn mắt cũ và gán lại…", command=self.qc_clear)
         self._cvat_menu["clear"] = menu.index("end")
+        menu.add_separator()
+        menu.add_command(label="Đăng xuất…", command=self.logout)          # LoginMixin (gui_login.py)
 
     def _cvat_buttons(self, top) -> list:
-        """Hai nút chữ nhỏ trên thanh cam (như nhóm Info, Filters của CVAT): Mở CVAT và Gửi CVAT."""
-        self.cvat_open_btn = IconButton(top, "open", lambda b: self.open_cvat(), tip="Mở một job từ CVAT trên máy", caption="Mở CVAT", kind="bar")
-        self.cvat_send_btn = IconButton(top, "export", lambda b: self.send_cvat(), tip=self._send_tip, caption="Gửi CVAT", kind="bar")
+        """Hai nút icon trên thanh cam (cạnh Info, Filters như CVAT), chữ chỉ hiện khi trỏ chuột: Mở job CVAT (HomeOutlined) và Gửi lên CVAT
+        (CloudUploadOutlined, mờ khi không gửi được)."""
+        self.cvat_open_btn = IconButton(top, "open", lambda b: self.open_cvat(), tip="Mở một job từ CVAT trên máy", kind="bar", size=BAR_SIZE)
+        self.cvat_send_btn = IconButton(top, "upload", lambda b: self.send_cvat(), tip=self._send_tip, kind="bar", size=BAR_SIZE)
+        self.cvat_send_btn.set_enabled(False)                    # chưa mở job CVAT nào
         return [self.cvat_send_btn, self.cvat_open_btn]
 
     def _build_qc_bar(self):
@@ -123,7 +130,7 @@ class CvatMixin:
         if self._menu is not None:
             self._menu.entryconfigure(self._cvat_menu["send"], state="normal" if send_ok else "disabled")
             self._menu.entryconfigure(self._cvat_menu["clear"], state="normal" if in_qc and not busy else "disabled")
-        self.cvat_send_btn.icon.configure(fg=theme.INK if send_ok else theme.MUTED)
+        self.cvat_send_btn.set_enabled(send_ok)                  # icon mờ (màu MUTED) và không bấm được khi không gửi được
         if in_qc:
             self.qc_bar.place(relx=0.5, y=8, anchor="n")
         else:
@@ -330,6 +337,8 @@ class CvatMixin:
 
     def _cvat_dialog_closed(self):
         """Đóng hộp đăng nhập mà chưa đăng nhập: bỏ việc đang chờ (gửi dở, job từ dòng lệnh) để lần đăng nhập sau không tự chạy chúng."""
+        if self._cvat_after_login is not None:       # đóng hộp mà chưa đăng nhập lại: lần gửi đang chờ đăng nhập (của Đăng xuất) bỏ luôn
+            self._after_send = None
         self._cvat_after_login = self._cvat_job = None
 
     def _cvat_dialog_alive(self) -> bool:
@@ -552,6 +561,14 @@ class CvatMixin:
             return
         if s is not None:
             self.refresh(light=True)
+        self._send_finished(False)                          # không gửi được gì: ai đang chờ kết quả lần gửi (Đăng xuất) biết mà dừng
+
+    def _send_finished(self, ok: bool):
+        """Lần gửi có kết quả cuối (xong và khớp, lỗi, hoặc người dùng huỷ ở hộp xác nhận): gọi việc đang chờ nó, một lần. Đăng nhập lại giữa chừng
+        (LoginNeeded) chưa phải kết quả cuối: việc chờ ở nguyên đó cho tới lần gửi lại."""
+        hook, self._after_send = self._after_send, None
+        if hook is not None:
+            hook(ok)
 
     def _send_text(self, plan) -> str:
         return plan.text() + "\n\nGửi lên CVAT?"          # job nền video có tag bị cvatsync.prepare từ chối trước khi tới đây
@@ -561,9 +578,11 @@ class CvatMixin:
             self._login_again(self.send_cvat)
         elif err is not None:
             self.report_error(err)
+            self._send_finished(False)
         elif not self.ask_send(self._send_text(plan), plan.needs_warning()):
             self.notice = "Đã huỷ gửi: chưa gửi gì lên CVAT."
             self.refresh(light=True)
+            self._send_finished(False)
         else:
             self._do_send(plan)
 
@@ -575,13 +594,16 @@ class CvatMixin:
                 self._login_again(self.send_cvat)
             elif err is not None:
                 self.report_error(err)
+                self._send_finished(False)
             elif res.ok:
-                s.dirty = True                                  # mốc `updated` mới vào file phiên
+                s.dirty = True                                  # mốc `updated` mới và cờ `unsent` = False vào file phiên
                 self.save_work(auto=True)
                 self.notice = f"Đã gửi {plan.keyframes} keyframe lên job #{plan.job_id}; đối chiếu khớp với CVAT (vị trí, cờ Occluded/Outside, keyframe)."
+                self._send_finished(True)
             else:
                 self.notice = res.message
                 self.show_send_failure(res, plan.job_id, s)
+                self._send_finished(False)
 
         self._run_bg(lambda: cvatsync.send(s, client, plan), done, "Đang gửi nhãn lên CVAT…")
 
