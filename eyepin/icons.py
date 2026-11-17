@@ -28,18 +28,20 @@ FALLBACK_TEXT = {
     "pinned": "P", "link": "@", "collapse": "v", "check": "ok", "export": "E",
     "settings": "⚙", "keyboard": "F1", "lock": "L", "unlock": "U", "open": "…",
     "cursor": "V", "hand": "H", "zoom_in": "+", "zoom_out": "-", "fit": "0",
-    "rot_ccw": "<", "rot_cw": ">", "kf_prev": "<", "kf_next": ">",
+    "rot_ccw": "<", "rot_cw": ">", "kf_prev": "<★", "kf_next": "★>", "logout": "→]",
 }
 
-# Tên cũ → (tên PNG, lật ngang?). Tên đã trùng tên PNG thì không cần ghi. "open", "search" không có PNG nên dùng chữ.
+# Tên cũ → (tên PNG, lật ngang?). Tên đã trùng tên PNG thì không cần ghi. `kf_prev`/`kf_next` là PNG ghép (mũi tên + sao, xem
+# tools/build_icons.py COMPOSITES); "open" (Mở job CVAT) dùng HomeOutlined vì CVAT không có nút mở job trên trang gán nhãn.
 ALIASES = {
-    "kf_prev": ("prev", False), "kf_next": ("next", False),
     "rot_ccw": ("rotate", True), "rot_cw": ("rotate", False),
-    "zoom_in": ("zoom", False), "zoom_out": ("zoom", False),
     "pin": ("skeleton", False), "pin_hidden": ("point", False),
     "keyframe": ("star", False), "collapse": ("caret_down", False),
-    "window": ("fullscreen", False),
+    "window": ("fullscreen", False), "open": ("home", False),
 }
+
+
+BAR_SIZE = 20       # cỡ icon của thanh cam trên cùng (CVAT dùng icon lớn ở header; 16 px làm undo/redo/lưu nét mảnh quá mờ)
 
 
 def _px(size: int) -> int:

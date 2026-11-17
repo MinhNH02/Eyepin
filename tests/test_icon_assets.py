@@ -1,7 +1,9 @@
 """Kiểm bộ icon PNG dựng từ SVG của CVAT và Ant Design (cả hai MIT)."""
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from PIL import Image
 
@@ -23,6 +25,13 @@ build = _load_build()
 
 
 class IconAssetsTest(unittest.TestCase):
+    def test_build_script_loads_without_pymupdf(self):
+        """Đọc ICON_SOURCES không cần PyMuPDF: thư viện đó chỉ cần khi dựng icon (máy chạy test có thể không cài)."""
+        with mock.patch.dict(sys.modules, {"fitz": None, "pymupdf": None}):   # None trong sys.modules = import thất bại
+            mod = _load_build()
+        self.assertIn("eye", mod.ICON_SOURCES)
+        self.assertEqual(mod.SIZES, (16, 20, 24))
+
     def test_every_icon_has_all_sizes(self):
         for name in build.ICON_SOURCES:
             for px in build.SIZES:

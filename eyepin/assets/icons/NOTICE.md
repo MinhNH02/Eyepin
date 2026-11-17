@@ -2,7 +2,8 @@
 
 Các biểu tượng trong thư mục này được dựng lại (đổi sang PNG trắng, ba cỡ 16/20/24 px) từ
 hai bộ biểu tượng mã nguồn mở, cả hai theo giấy phép MIT. Script dựng: `tools/build_icons.py`,
-SVG gốc: `tools/icon_src/`.
+SVG gốc: `tools/icon_src/`. Hai icon `kf_prev`, `kf_next` được ghép từ `previous-icon`/`next-icon`
+của CVAT và `StarFilled` của Ant Design (cùng hai giấy phép dưới đây).
 
 ## 1. CVAT (cvat-ai/cvat, v2.75.0), giấy phép MIT
 

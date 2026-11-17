@@ -7,11 +7,7 @@ Mỗi icon ra ba cỡ eyepin/assets/icons/<tên>-<px>.png (RGBA, RGB trắng, h�
 import re
 from pathlib import Path
 
-try:
-    import pymupdf as fitz  # PyMuPDF (tên mới)
-except ImportError:
-    import fitz
-from PIL import Image
+from PIL import Image, ImageChops, ImageFilter
 
 HERE = Path(__file__).resolve().parent
 SRC = HERE / "icon_src"
@@ -57,6 +53,9 @@ ICON_SOURCES = {
     "rotate": "cvat/rotate-icon",
     "fit": "cvat/fit-to-window-icon",
     "zoom": "cvat/zoom-icon",
+    "zoom_in": "ant/outlined_zoom-in",
+    "zoom_out": "ant/outlined_zoom-out",
+    "search": "ant/outlined_search",
     "skeleton": "cvat/skeleton-icon",
     "point": "cvat/point-icon",
     "display": "cvat/colorize-icon",
@@ -78,11 +77,21 @@ ICON_SOURCES = {
     "logout": "ant/outlined_logout",
 }
 
+# Nút của riêng EyePin (CVAT không có trên thanh trên): ghép mũi tên CVAT với huy hiệu nhỏ ở góc dưới, đúng kiểu
+# previous-filtered-icon / next-filtered-icon của CVAT (mũi tên + phễu). Tên -> (SVG nền, SVG huy hiệu, góc).
+COMPOSITES = {
+    "kf_prev": ("cvat/previous-icon", "ant/filled_star", "left"),       # keyframe trước (cả job hoặc mắt đang chọn)
+    "kf_next": ("cvat/next-icon", "ant/filled_star", "right"),          # keyframe kế
+}
+BADGE = 0.45            # cạnh huy hiệu so với cạnh icon
+SHIFT = 0.12            # dời mũi tên ra xa huy hiệu để hai hình không chạm nhau
+
 NOTICE_HEAD = """# Bản quyền biểu tượng
 
 Các biểu tượng trong thư mục này được dựng lại (đổi sang PNG trắng, ba cỡ 16/20/24 px) từ
 hai bộ biểu tượng mã nguồn mở, cả hai theo giấy phép MIT. Script dựng: `tools/build_icons.py`,
-SVG gốc: `tools/icon_src/`.
+SVG gốc: `tools/icon_src/`. Hai icon `kf_prev`, `kf_next` được ghép từ `previous-icon`/`next-icon`
+của CVAT và `StarFilled` của Ant Design (cùng hai giấy phép dưới đây).
 
 ## 1. CVAT (cvat-ai/cvat, v2.75.0), giấy phép MIT
 
@@ -121,8 +130,18 @@ def _prepare_svg(svg_path: Path, px: int) -> bytes:
     return text.replace(tag, new, 1).encode("utf-8")
 
 
+def _fitz():
+    """PyMuPDF, nạp lúc dựng icon chứ không lúc import: test chỉ đọc ICON_SOURCES/SIZES chạy được cả khi máy không cài PyMuPDF."""
+    try:
+        import pymupdf as fitz  # PyMuPDF (tên mới)
+    except ImportError:
+        import fitz
+    return fitz
+
+
 def render(svg_path: Path, px: int) -> Image.Image:
     """SVG -> RGBA trắng cỡ px x px; độ phủ của nét vẽ nằm ở kênh alpha."""
+    fitz = _fitz()
     doc = fitz.open(stream=_prepare_svg(svg_path, px), filetype="svg")
     page = doc[0]
     s = px / page.rect.width
@@ -133,6 +152,20 @@ def render(svg_path: Path, px: int) -> Image.Image:
     if im.size != (px, px):
         im = im.resize((px, px), Image.LANCZOS)
     alpha = im.point(lambda v: 255 - v)
+    out = Image.new("RGBA", (px, px), (255, 255, 255, 0))
+    out.putalpha(alpha)
+    return out
+
+
+def compose(base_rel: str, badge_rel: str, corner: str, px: int) -> Image.Image:
+    """Icon ghép: mũi tên (dời `SHIFT` về phía xa huy hiệu) + huy hiệu nhỏ ở góc dưới trái/phải, khoét viền 1 px quanh huy hiệu."""
+    base = render(SRC / f"{base_rel}.svg", px).getchannel("A")
+    base = ImageChops.offset(base, round(px * SHIFT) * (1 if corner == "left" else -1), 0)
+    n = max(7, round(px * BADGE))
+    lay = Image.new("L", (px, px), 0)
+    lay.paste(render(SRC / f"{badge_rel}.svg", n).getchannel("A"), (0 if corner == "left" else px - n, px - n))
+    hole = lay.point(lambda v: 255 if v > 40 else 0).filter(ImageFilter.MaxFilter(3))
+    alpha = ImageChops.lighter(ImageChops.subtract(base, hole), lay)
     out = Image.new("RGBA", (px, px), (255, 255, 255, 0))
     out.putalpha(alpha)
     return out
@@ -150,8 +183,11 @@ def main() -> None:
     for name, rel in ICON_SOURCES.items():
         for px in SIZES:
             render(SRC / f"{rel}.svg", px).save(OUT / f"{name}-{px}.png")
+    for name, (base, badge, corner) in COMPOSITES.items():
+        for px in SIZES:
+            compose(base, badge, corner, px).save(OUT / f"{name}-{px}.png")
     write_notice()
-    print(f"{len(ICON_SOURCES)} icon x {len(SIZES)} cỡ -> {OUT}")
+    print(f"{len(ICON_SOURCES)} icon + {len(COMPOSITES)} icon ghép x {len(SIZES)} cỡ -> {OUT}")
 
 
 if __name__ == "__main__":
