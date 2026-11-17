@@ -260,6 +260,18 @@ class TestOpenJob(Base):
         self.assertEqual(sorted(s.ann.tracks["mattrai"][0].keys), [0, 2])
         self.assertEqual(s.ann.frame_numbers, [10, 11, 12, 13, 14])
 
+    def test_open_job_qc_when_only_json_has_eyes(self):
+        job = self.serve()                              # XML rỗng: parse không thấy mắt
+        job.annotations_json = dict(ann_json(), tracks=[{"label_id": MATTRAI, "frame": 0, "shapes": [{"frame": 0, "outside": True}], "elements": []}])
+        s = open_job(self.cl, 7)
+        self.assertTrue(s.qc)
+        self.assertEqual((s.base_format, s.display_format), (IMAGES, VIDEO))
+
+    def test_open_job_without_eyes_in_json_or_xml_stays_out_of_qc(self):
+        job = self.serve()
+        job.annotations_json = ann_json(shapes=[FACE])
+        self.assertFalse(open_job(self.cl, 7).qc)
+
     def test_mixed_job_keeps_other_shapes_and_eye_keyframes(self):
         job = self.serve(start_frame=10)
         job.export_xml_by_format[IMAGES] = xml_of(images=box_image(11) + eye_shape_image(12))   # nhãn mắt bị trải thành shape

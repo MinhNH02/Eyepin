@@ -142,6 +142,29 @@ class QcTests(unittest.TestCase):
         s = Session(source=FakeSource(), ann=load(build_xml()))
         self.assertFalse(s.restore_old_eyes())
 
+    def test_json_has_eyes_shape_track_empty_outside(self):
+        ids = {14, 22}
+        self.assertTrue(qc.json_has_eyes({"shapes": [{"label_id": 14, "elements": []}]}, ids))
+        self.assertTrue(qc.json_has_eyes({"tracks": [{"label_id": 22, "shapes": [], "elements": []}]}, ids))          # track rỗng
+        self.assertTrue(qc.json_has_eyes({"tracks": [{"label_id": 14, "shapes": [{"outside": True}]}]}, ids))      # toàn Outside
+        self.assertFalse(qc.json_has_eyes({"shapes": [{"label_id": 1}], "tracks": [{"label_id": 2}]}, ids))
+        self.assertFalse(qc.json_has_eyes({}, ids))
+
+    def test_json_has_eyes_without_ids_uses_eight_point_skeleton(self):
+        sk = {"label_id": 99, "elements": [{}] * 8}
+        self.assertTrue(qc.json_has_eyes({"tracks": [sk]}))
+        self.assertFalse(qc.json_has_eyes({"tracks": [dict(sk, elements=[{}] * 5)]}))
+
+    def test_json_has_eyes_tolerates_null_lists(self):
+        self.assertFalse(qc.json_has_eyes({"shapes": None, "tracks": None}, {14}))
+        self.assertTrue(qc.json_has_eyes({"shapes": None, "tracks": [{"label_id": 14}]}, {14}))
+
+    def test_is_eye_obj_by_id_and_by_shape(self):
+        self.assertTrue(qc.is_eye_obj({"label_id": 14}, {14, 22}))
+        self.assertFalse(qc.is_eye_obj({"label_id": 99, "elements": [{}] * 8}, {14, 22}))     # biết id thì chỉ theo id
+        self.assertTrue(qc.is_eye_obj({"label_id": 99, "elements": [{}] * qc.EYE_POINTS}, None))
+        self.assertFalse(qc.is_eye_obj({"label_id": 99}, None))
+
 
 if __name__ == "__main__":
     unittest.main()

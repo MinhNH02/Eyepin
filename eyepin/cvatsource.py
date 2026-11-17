@@ -16,7 +16,6 @@ from .cvatapi import EYES, CvatClient, CvatError, LoginNeeded
 from .session import Session
 
 IMAGES = "CVAT for images 1.1"     # shape giữ nguyên là shape; track bị trải thành shape ở mọi frame
-EYE_POINTS = 8
 VIDEO = "CVAT for video 1.1"       # track giữ keyframe; shape thành track một frame
 
 
@@ -85,10 +84,7 @@ def _eye_label_ids(labels: list[dict]) -> set[int]:
     return {lb["id"] for lb in labels if lb.get("name") in EYES}
 
 
-def _is_eye(obj: dict, eye_ids: set[int] | None) -> bool:
-    if eye_ids is not None:
-        return obj.get("label_id") in eye_ids
-    return len(obj.get("elements") or []) == EYE_POINTS            # không biết id nhãn: skeleton đủ 8 điểm (shape và track skeleton đều có `elements`)
+_is_eye = qc.is_eye_obj             # quy tắc "là mắt" nằm ở qc.py; tên cũ giữ cho cvatsync
 
 
 def base_format(annotations_json: dict, eye_label_ids: set[int] | None = None) -> tuple[str, str]:
@@ -104,10 +100,6 @@ def base_format(annotations_json: dict, eye_label_ids: set[int] | None = None) -
     return base, display
 
 
-def _has_eyes(annotations_json: dict, eye_ids: set[int]) -> bool:
-    return any(_is_eye(o, eye_ids) for k in ("shapes", "tracks") for o in annotations_json.get(k) or [])
-
-
 def open_job(client: CvatClient, job_id: int) -> Session:
     """Mở một job của CVAT thành phiên làm việc: nhãn hiện có là nhãn nền (job có nhãn mắt thì phiên ở chế độ QC)."""
     problem = client.eye_labels_ok(job_id)
@@ -120,7 +112,7 @@ def open_job(client: CvatClient, job_id: int) -> Session:
     nums = source.frame_numbers
     try:
         ann = cvatxml.parse_bytes(client.export_xml(job_id, base), nums)
-        if display != base and _has_eyes(aj, eye_ids):       # hai định dạng giữ khác nhau: nền từ `base`, nhãn mắt (keyframe) từ `display`
+        if display != base and qc.json_has_eyes(aj, eye_ids):       # hai định dạng giữ khác nhau: nền từ `base`, nhãn mắt (keyframe) từ `display`
             shown = cvatxml.parse_bytes(client.export_xml(job_id, display), nums)
             ann.tracks, ann.shapes = shown.tracks, shown.shapes
     except ValueError as e:
@@ -128,5 +120,5 @@ def open_job(client: CvatClient, job_id: int) -> Session:
     session = Session(source=source, ann=ann)
     session.cvat = {"job": job_id, "updated": source.job.get("updated_date")}
     session.base_format, session.display_format = base, display
-    session.qc = qc.has_eye_labels(ann)
+    session.qc = qc.has_eye_labels(ann) or qc.json_has_eyes(aj, eye_ids)     # JSON thấy mắt mà XML không (track rỗng/toàn Outside): vẫn là QC, không cho gán đè
     return session

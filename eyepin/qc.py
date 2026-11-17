@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 
 from .cvatxml import Annotations, EYE_LABELS
 
+EYE_POINTS = 8                 # số điểm của một skeleton mắt
+
 
 @dataclass
 class EyeLabels:
@@ -41,6 +43,21 @@ def eye_labels(ann: Annotations) -> EyeLabels:
 
 def has_eye_labels(ann: Annotations) -> bool:
     return not eye_labels(ann).empty()
+
+
+def is_eye_obj(obj: dict, eye_ids: set[int] | None) -> bool:
+    """Phần tử `shapes`/`tracks` của JSON `GET /api/jobs/{id}/annotations` có phải một mắt không (kể cả track rỗng hay toàn Outside).
+
+    `eye_ids` là id nhãn của hai skeleton mắt; không biết (None) thì skeleton đủ 8 điểm được coi là mắt (shape và track skeleton đều có `elements`).
+    """
+    if eye_ids is not None:
+        return obj.get("label_id") in eye_ids
+    return len(obj.get("elements") or []) == EYE_POINTS
+
+
+def json_has_eyes(annotations_json: dict, eye_ids: set[int] | None = None) -> bool:
+    """True nếu JSON nhãn của job có bất kỳ mắt nào, kể cả khi XML đã xuất không còn thấy (track rỗng, toàn Outside, ngoài khoảng frame)."""
+    return any(is_eye_obj(o, eye_ids) for k in ("shapes", "tracks") for o in annotations_json.get(k) or [])
 
 
 def without_eyes(ann: Annotations) -> Annotations:
