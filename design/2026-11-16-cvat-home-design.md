@@ -130,4 +130,49 @@ Lý do của người dùng: công ty quy định trước khi ra về phải xo
 - `jobs.count` trong `/api/tasks` của 2.75.
 
 ## 8. Chờ người dùng (không chặn việc làm)
-- Lối tắt Eyepin trên Desktop có đổi sang mở trang chủ (`--cvat http://localhost:8080`) không. Mặc định chưa đổi; lệnh `gui` không tham số vẫn mở cửa sổ trống như hiện nay.
+- Lối tắt Eyepin trên Desktop có đổi sang mở trang chủ (`--cvat http://localhost:8080`) không. Mặc định chưa đổi; lệnh `gui` không tham số vẫn mở cửa sổ trống như hiện nay. **→ Đã quyết ở mục 9 (2026-11-17).**
+
+## 9. Bổ sung 2026-11-17: màn đăng nhập là cửa trước (người dùng chọn cách A)
+Người dùng nói: "nên làm 1 màn đăng nhập trước khi vào trong eyepin", rồi chọn **A** trong ba cách (A: màn đăng nhập trước, có liên kết đi thẳng vào thư mục ảnh; B: bắt buộc đăng nhập, không có liên kết; C: chỉ hiện khi chạy `--cvat`). Mục này đổi mục 4.1 (lệnh `gui` không tham số, và mục 8). Phần còn lại của bản thiết kế này giữ nguyên.
+
+**Làm lần này (lát cắt nhỏ, chạy được trước khi có trang chủ):**
+- **Màn đăng nhập** (`eyepin/gui_login.py`, `LoginScreen`) hiện trong cửa sổ chính, trước khi dựng giao diện gán nhãn, khi chạy `python -m eyepin gui` không kèm thư mục ảnh. Gồm địa chỉ CVAT, tên đăng nhập, mật khẩu, ô "Ghi nhớ đăng nhập (N giờ)", nút Đăng nhập, và liên kết "Làm việc không cần CVAT → mở thư mục ảnh" (đi vào cửa sổ trống như hiện nay).
+- **Nhớ đăng nhập** (`eyepin/cvatlogin.py`, đúng mục 3b và 4.6): khoá lưu mã hoá DPAPI ở `cvat_login.bin`, hạn mặc định 8 giờ, không bao giờ lưu mật khẩu, không gọi `POST /api/auth/logout`. Còn khoá hợp lệ thì **bỏ qua màn đăng nhập** (thử `GET /api/users/self` ở luồng nền): 401 → xoá file, hiện màn đăng nhập; CVAT tắt hoặc lỗi mạng → hiện màn đăng nhập kèm lỗi và **giữ** file khoá.
+- Đăng nhập xong: `--job N` thì mở thẳng job N; không thì mở hộp "Mở từ CVAT…" đã đăng nhập sẵn (danh sách task/job). Trang chủ (mục 4.2) sẽ thay hộp này sau.
+- **Đăng xuất…** trong menu (bản rút gọn của mục 4.6b; **đã được thay bằng bản đầy đủ ở mục 9b**): hỏi xác nhận, hỏi lưu nếu còn thay đổi chưa lưu, xoá file khoá đã nhớ và tên đăng nhập trong `settings.json`, rồi đóng cửa sổ. Bản này chưa dọn file phiên của job CVAT và chưa kiểm công chưa gửi.
+- Cài đặt F2 > Workspace: "Nhớ đăng nhập CVAT (giờ)", 0 = không nhớ (và xoá khoá đang nhớ), tối đa 72.
+
+**Không đổi:** `gui <thư_mục_ảnh>`, `--pins`, `--xml`, `--selftest` vào thẳng cửa sổ như cũ (đường demo/dòng lệnh, test dựa vào chúng). `--cvat URL [--job N]` vẫn dùng, nay mở màn đăng nhập với địa chỉ điền sẵn. Chỉ nhận localhost như `CvatClient` (server công ty để sau).
+
+**Giới hạn cần nói thẳng:** màn này chỉ kiểm tài khoản CVAT. Nó không khoá được ảnh hay file trên máy (tool chạy local, có liên kết vào thư mục ảnh, và dòng lệnh vẫn mở thẳng), nên không phải cổng chặn người dùng.
+
+**Cách đã cân nhắc:** (A) màn đăng nhập trước + liên kết thư mục ảnh (**chọn**); (B) bắt buộc đăng nhập, không liên kết (loại: demo case 01 và QC trên thư mục ảnh phải gõ lệnh); (C) chỉ hiện khi `--cvat` (loại: không cho người dùng thứ họ yêu cầu).
+
+**Quyết định của mình (người dùng chưa duyệt từng cái):**
+- Màn đăng nhập hiện trong cùng cửa sổ chính (không mở cửa sổ phụ), đóng bằng nút X thì thoát EyePin.
+- Hạn nhớ lưu ở `settings["workspace"]["remember_login_hours"]`, **không** ở `settings["cvat"]` như kế hoạch cũ ghi: hộp "Mở từ CVAT…" hiện tại ghi đè nguyên `settings["cvat"]` mỗi lần đăng nhập nên sẽ làm mất giá trị người dùng đã chỉnh.
+- Ô "Ghi nhớ" mặc định bật (như mục 3b). Bỏ ô này khi đăng nhập thì xoá khoá đang nhớ (nếu không, lần sau vẫn tự vào, trái ý người dùng).
+- Mật khẩu bị xoá khỏi ô nhập sau mỗi lần thử, đúng hay sai.
+- Hạn nhớ bị kẹp trong 0–72 giờ; giá trị hỏng trong `settings.json` coi là 8.
+- Khoá mã hoá DPAPI có thêm "entropy" cố định của EyePin; chỉ tài khoản Windows đã tạo mới giải mã được. File hỏng hoặc của tài khoản khác: coi như không có, xoá, không sập.
+- Lối tắt Desktop `Eyepin.lnk` đang trỏ tới `EyePin_case01.bat` (truyền sẵn thư mục case 01) nên **vẫn bỏ qua màn đăng nhập**; thêm `EyePin.bat` (chạy `gui` không tham số) nhưng không đổi lối tắt của người dùng.
+
+## 9b. Bổ sung 2026-11-17: nút Đăng xuất đầy đủ (người dùng: "làm nút đăng xuất đi")
+Làm nốt mục 4.6b (người dùng đã đồng ý từ 2026-11-16) cộng một **nút Đăng xuất nhìn thấy được** (icon `logout`, ngoài cùng bên phải thanh cam trên cùng; menu vẫn có mục "Đăng xuất…"). Thay bản rút gọn ở mục 9. Hành vi đúng 4.6b: kiểm công chưa gửi trước khi xoá; job đang mở chưa gửi → **Gửi rồi đăng xuất / Đăng xuất và bỏ công này / Huỷ** (mặc định Huỷ; gửi lỗi hoặc huỷ ở hộp gửi thì dừng, không xoá gì); job khác còn phiên chưa gửi → liệt kê và hỏi **Xoá luôn / Huỷ**; xoá khoá đã nhớ, tên đăng nhập (giữ địa chỉ) và mọi file phiên của job CVAT; không xoá phiên thư mục ảnh và file người dùng tự lưu; xoá lỗi một file thì báo tên file, không nói "đã sạch", không đóng cửa sổ. Không bao giờ gọi `POST /api/auth/logout`.
+
+**Cờ "chưa gửi" `Session.unsent`** (kế hoạch Task 4): bật ở mọi thay đổi nhãn (`_push_undo`, `undo`, `redo`), tắt khi mở job và sau lần gửi **thành công và đối chiếu khớp** (gửi xong mà đối chiếu lệch thì vẫn "chưa gửi": an toàn hơn). Lưu vào file phiên của job CVAT (`unsent`).
+
+**Khác kế hoạch cũ (mình tự quyết, chưa duyệt từng cái):**
+- **Không tạo thư mục `sessions/cvat/` và không chuyển file cũ.** Nhận ra file phiên của job CVAT bằng nội dung: file có khoá `cvat` (từ trước tới nay `Session.state()` đã ghi khoá này cho job CVAT, nên cả file cũ cũng nhận ra được mà khỏi chuyển). Ít chỗ phải sửa hơn (`state_path` giữ nguyên) và không bỏ sót file cũ.
+- **File phiên cũ chưa có trường `unsent`** (lưu trước hôm nay) mà có ghim: coi là "chưa rõ đã gửi hay chưa" và liệt kê cùng nhóm chưa gửi (nghiêng về an toàn; lần đăng xuất đầu có thể hỏi về các phiên thử cũ). Không có ghim thì không hỏi.
+- **Khôi phục phiên đã lưu:** theo trường `unsent` trong file (kế hoạch cũ ghi "luôn True nếu có ghim", sẽ hỏi thừa với phiên đã gửi xong); thiếu trường thì True nếu có ghim.
+- **Hộp hỏi gộp để khỏi hỏi dồn:** không có gì chưa gửi thì chỉ một hộp xác nhận; có công chưa gửi thì hộp "Gửi / Bỏ / Huỷ" thay cho hộp xác nhận chung, thêm hộp thứ hai chỉ khi còn job khác chưa gửi. Với job CVAT đang mở không hỏi "lưu rồi thoát" (bản lưu sắp bị xoá); phiên thư mục ảnh đang mở vẫn hỏi như khi đóng cửa sổ.
+- ~~Đăng xuất đóng EyePin~~ **Người dùng chốt 2026-11-17: Đăng xuất (sau khi dọn dữ liệu như trên) chỉ quay về màn đăng nhập; chỉ khi đóng cửa sổ EyePin mới thoát tiến trình.** (Bản trước do Claude tự chọn: "đóng EyePin", lý do cũ: dựng lại `App` dễ sót phím gắn toàn cục và hẹn giờ — B13 đã thêm đường huỷ mọi hẹn giờ khi đóng, dùng được khi dựng lại.)
+- Tự lưu bị huỷ trước khi xoá để một lần tự lưu không ghi lại file vừa xoá.
+
+## 9c. Ghi chú 2026-11-17 khi cập nhật kế hoạch (không đổi quyết định nào của người dùng)
+- Kế hoạch đã viết lại theo mã hiện tại (`design/2026-11-16-cvat-home-plan.md`, bản 2; đối chiếu ở `.superpowers/sdd/bugfix/PLAN2-check.md`).
+- Mục 5 "Không git" đã cũ: dự án dùng git; việc của kế hoạch này làm trên nhánh `feature/cvat-home` từ `develop`.
+- Mục 4.3: hàm dùng chung có chữ ký `qc.json_has_eyes(aj, eye_ids=None)` (nhận id nhãn mắt; trang chủ lấy nhãn của task một lần) — đề xuất của Claude.
+- Mục 4.6b bước 4 ("đóng job đang mở và về màn đăng nhập") nay khớp lại với quyết định dòng 170; kế hoạch Task 2 làm việc này bằng cách gỡ `App` khỏi cửa sổ và dựng lại màn đăng nhập trong cùng cửa sổ.
+- Mục 4.6 "gặp 401 → xoá file": hiện mới đúng ở màn đăng nhập; giữa job chưa đúng (kế hoạch Task 4).
