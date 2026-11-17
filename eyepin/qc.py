@@ -49,6 +49,7 @@ def is_eye_obj(obj: dict, eye_ids: set[int] | None) -> bool:
     """Phần tử `shapes`/`tracks` của JSON `GET /api/jobs/{id}/annotations` có phải một mắt không (kể cả track rỗng hay toàn Outside).
 
     `eye_ids` là id nhãn của hai skeleton mắt; không biết (None) thì skeleton đủ 8 điểm được coi là mắt (shape và track skeleton đều có `elements`).
+    Chưa biết id nhãn thì truyền None, không phải set(): tập rỗng nghĩa là "đã biết và không có nhãn mắt nào" nên không phần tử nào là mắt.
     """
     if eye_ids is not None:
         return obj.get("label_id") in eye_ids

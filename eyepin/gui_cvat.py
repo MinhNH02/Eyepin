@@ -506,9 +506,13 @@ class CvatMixin:
         """Gọi khi một phiên vừa được mở xong: job đã có nhãn mắt thì vào chế độ QC (tự quét, mở tab Issues)."""
         if self.s is not None and self.s.qc:
             self._enter_qc_view()
-            n = len(self.s.findings)
-            intro = (f"Chế độ QC: job đã có nhãn mắt, quét thấy {n} vấn đề. Chỉ xem; muốn gán lại thì bấm \"Xoá nhãn mắt cũ và gán lại\". "
-                     "Gửi lên CVAT đang tắt.")
+            if qc.eye_labels(self.s.ann).empty():            # QC chỉ do JSON: bản xuất không còn thấy mắt nào để xem hay quét
+                intro = ("Chế độ QC: job có nhãn mắt rỗng hoặc toàn Outside trên CVAT, bản xuất không hiện nhãn nào để xem. "
+                         "Muốn gán lại thì bấm \"Xoá nhãn mắt cũ và gán lại\" (lúc gửi, nhãn mắt cũ trên CVAT bị thay). Gửi lên CVAT đang tắt.")
+            else:
+                n = len(self.s.findings)
+                intro = (f"Chế độ QC: job đã có nhãn mắt, quét thấy {n} vấn đề. Chỉ xem; muốn gán lại thì bấm \"Xoá nhãn mắt cũ và gán lại\". "
+                         "Gửi lên CVAT đang tắt.")
             self.notice = f"{self.notice} {intro}" if self.notice else intro
 
     def qc_clear(self):
@@ -523,9 +527,15 @@ class CvatMixin:
             self._edit_blocked()
             return
         gone = qc.eye_labels(s.ann)
-        text = (f"Sẽ bỏ nhãn mắt cũ của job khỏi phiên làm việc: {gone.message()}.\n"
-                "Nhãn không phải mắt giữ nguyên. Trên CVAT chưa đổi gì cho tới khi bạn bấm \"Gửi lên CVAT\"; lúc đó nhãn mắt cũ bị thay bằng nhãn bạn gán. "
-                "Trước khi gửi, Ctrl+Z đưa nhãn mắt cũ về và quay lại chế độ QC.\n\nTiếp tục?")
+        if gone.empty():             # QC chỉ do JSON (track mắt rỗng hoặc toàn Outside): phiên không giữ gì để bỏ
+            text = ("Job có nhãn mắt trên CVAT (track rỗng hoặc toàn Outside) mà bản xuất không còn thấy, nên phiên chưa có gì để bỏ; "
+                    "EyePin sẽ rời chế độ QC.\n"
+                    "Trên CVAT chưa đổi gì cho tới khi bạn bấm \"Gửi lên CVAT\"; lúc đó nhãn mắt cũ trên CVAT bị thay bằng nhãn bạn gán. "
+                    "Trước khi gửi, Ctrl+Z quay lại chế độ QC.\n\nTiếp tục?")
+        else:
+            text = (f"Sẽ bỏ nhãn mắt cũ của job khỏi phiên làm việc: {gone.message()}.\n"
+                    "Nhãn không phải mắt giữ nguyên. Trên CVAT chưa đổi gì cho tới khi bạn bấm \"Gửi lên CVAT\"; lúc đó nhãn mắt cũ bị thay bằng nhãn bạn gán. "
+                    "Trước khi gửi, Ctrl+Z đưa nhãn mắt cũ về và quay lại chế độ QC.\n\nTiếp tục?")
         if not self.ask_clear_eyes(text):
             self.notice = "Đã huỷ: vẫn ở chế độ QC."
             self.refresh(light=True)

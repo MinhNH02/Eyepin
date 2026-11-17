@@ -159,6 +159,9 @@ class QcTests(unittest.TestCase):
         self.assertFalse(qc.json_has_eyes({"shapes": None, "tracks": None}, {14}))
         self.assertTrue(qc.json_has_eyes({"shapes": None, "tracks": [{"label_id": 14}]}, {14}))
 
+    def test_is_eye_obj_empty_set_is_not_unknown(self):
+        self.assertFalse(qc.is_eye_obj({"label_id": 99, "elements": [{}] * 8}, set()))      # set() = biết mà không có id nào; chưa biết thì truyền None
+
     def test_is_eye_obj_by_id_and_by_shape(self):
         self.assertTrue(qc.is_eye_obj({"label_id": 14}, {14, 22}))
         self.assertFalse(qc.is_eye_obj({"label_id": 99, "elements": [{}] * 8}, {14, 22}))     # biết id thì chỉ theo id

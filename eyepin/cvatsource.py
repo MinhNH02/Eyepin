@@ -109,10 +109,11 @@ def open_job(client: CvatClient, job_id: int) -> Session:
     source = CvatSource(client, job_id)
     aj = client.annotations(job_id)
     base, display = base_format(aj, eye_ids)
+    json_eyes = qc.json_has_eyes(aj, eye_ids)
     nums = source.frame_numbers
     try:
         ann = cvatxml.parse_bytes(client.export_xml(job_id, base), nums)
-        if display != base and qc.json_has_eyes(aj, eye_ids):       # hai định dạng giữ khác nhau: nền từ `base`, nhãn mắt (keyframe) từ `display`
+        if display != base and json_eyes:       # hai định dạng giữ khác nhau: nền từ `base`, nhãn mắt (keyframe) từ `display`
             shown = cvatxml.parse_bytes(client.export_xml(job_id, display), nums)
             ann.tracks, ann.shapes = shown.tracks, shown.shapes
     except ValueError as e:
@@ -120,5 +121,5 @@ def open_job(client: CvatClient, job_id: int) -> Session:
     session = Session(source=source, ann=ann)
     session.cvat = {"job": job_id, "updated": source.job.get("updated_date")}
     session.base_format, session.display_format = base, display
-    session.qc = qc.has_eye_labels(ann) or qc.json_has_eyes(aj, eye_ids)     # JSON thấy mắt mà XML không (track rỗng/toàn Outside): vẫn là QC, không cho gán đè
+    session.qc = qc.has_eye_labels(ann) or json_eyes     # JSON thấy mắt mà XML không (track rỗng/toàn Outside): vẫn là QC, không cho gán đè
     return session

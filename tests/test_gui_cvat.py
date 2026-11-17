@@ -104,6 +104,13 @@ class CvatGuiCase(unittest.TestCase):
         return FakeJob(job_id, task_id=3, task_name="clip", xml=xml_of(job_size=N), **kw)
 
     @staticmethod
+    def json_only_qc_job(job_id=7):
+        """Job có track mắt toàn Outside: JSON của CVAT còn thấy, bản xuất XML thì không (XML rỗng)."""
+        job = FakeJob(job_id, task_id=3, task_name="clip", n_frames=N, xml=xml_of(job_size=N))
+        job.annotations_json = dict(ann_json(), tracks=[{"id": 5, "label_id": MATTRAI, "frame": 0, "shapes": [{"frame": 0, "outside": True}], "elements": []}])
+        return job
+
+    @staticmethod
     def qc_job(job_id=7):
         job = FakeJob(job_id, task_id=3, task_name="clip", n_frames=N, xml=xml_of(tracks=eye_track(37, "mattrai", [0, 2]), job_size=N))
         job.annotations_json = ann_json(tracks=[MATTRAI])
@@ -198,6 +205,23 @@ class TestOpen(CvatGuiCase):
         self.assertEqual(str(app.cvat_send_btn.icon.cget("fg")), theme.MUTED)   # nút Gửi tắt (mờ đi)
         self.assertEqual(app._menu.entrycget(app._cvat_menu["send"], "state"), "disabled")
         self.assertEqual(app._menu.entrycget(app._cvat_menu["clear"], "state"), "normal")
+
+    def test_open_job_with_eyes_only_in_json_says_the_export_shows_none(self):
+        self.serve(self.json_only_qc_job())
+        app = self.make_app()
+        s = self.open_job(app)
+        self.assertTrue(s.qc)
+        self.assertEqual(s.findings, [])
+        self.assertIn("toàn Outside", app.notice)                          # nói thẳng: nhãn mắt rỗng/toàn Outside, bản xuất không hiện
+        self.assertIn("không hiện", app.notice)
+        self.assertNotIn("quét thấy", app.notice)                          # không phải "quét thấy 0 vấn đề"
+        self.assertEqual(app.qc_bar.winfo_manager(), "place")
+
+    def test_open_job_with_eyes_in_xml_keeps_the_scan_sentence(self):
+        self.serve(self.qc_job())
+        app = self.make_app()
+        self.open_job(app)
+        self.assertIn("quét thấy", app.notice)
 
     def test_qc_status_lists_the_eyes_as_from_file(self):
         self.serve(self.qc_job())
@@ -322,6 +346,22 @@ class TestQc(CvatGuiCase):
         self.assertTrue(app.cvat_send_allowed())
         self.assertEqual(self.srv.import_formats, [])                      # chưa ghi gì lên CVAT
         self.assertEqual(app._menu.entrycget(app._cvat_menu["clear"], "state"), "disabled")
+
+    def test_qc_clear_with_eyes_only_in_json_says_a_true_sentence(self):
+        self.serve(self.json_only_qc_job())
+        app = self.make_app()
+        s = self.open_job(app)
+        self.assertTrue(s.qc)
+        app.qc_clear()
+        kind, text, _ = app.asked[-1]
+        self.assertEqual(kind, "clear")
+        self.assertNotIn(": .", text)                                      # không còn câu rỗng "…khỏi phiên làm việc: ."
+        self.assertIn("toàn Outside", text)                                # nói đúng nhãn cũ là gì và vì sao phiên không thấy
+        self.assertIn("chưa có gì để bỏ", text)
+        self.assertIn("thay", text)                                        # khi Gửi, nhãn mắt cũ trên CVAT bị thay
+        self.assertIn("Gửi lên CVAT", text)
+        self.assertFalse(s.qc)
+        self.assertEqual(self.srv.import_formats, [])                      # chưa ghi gì lên CVAT
 
     def test_qc_clear_declined_changes_nothing_and_undo_returns_to_qc(self):
         self.serve(self.qc_job())
