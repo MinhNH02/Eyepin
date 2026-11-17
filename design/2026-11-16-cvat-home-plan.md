@@ -347,6 +347,7 @@ def test_missing_preview_is_a_grey_box(self):
 - EyePin là tool bên ngoài CVAT: nút Đăng xuất chỉ đăng xuất khỏi EyePin (dọn dữ liệu cục bộ, về màn đăng nhập), KHÔNG bao giờ đăng xuất CVAT. Giữ nút ở mọi chế độ (kể cả phiên thư mục ảnh).
 - Xoá hẳn hộp "Mở từ CVAT…" cũ (trang chủ thay thế).
 - Sau Đăng xuất KHÔNG tự mở lại job (kể cả job truyền bằng `--job`): phải đăng nhập lại, rồi vào trang chủ.
+- Tách hai nút (người dùng 2026-11-17): **Đăng xuất** (dọn dữ liệu cục bộ, về màn đăng nhập) và **Thoát EyePin** (như đóng cửa sổ: hỏi lưu rồi tắt tiến trình, không dọn dữ liệu). Làm trong vòng sửa 1 của Task 2.
 - Chưa trả lời: lối tắt Desktop `Eyepin.lnk` có đổi sang `EyePin.bat` không; mật khẩu cho lần thử thật ở Task 8 (người dùng tự nhập).
 
 
