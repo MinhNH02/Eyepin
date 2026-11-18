@@ -468,7 +468,8 @@ class Session:
 
     def paste_points(self, frame: int, pts: dict[int, Point]) -> None:
         """Dán nhãn vào `frame` (thành frame ghim, một bước hoàn tác): đủ 16 điểm hai mắt, hoặc 8 điểm của một mắt
-        (khi đó frame phải đã có nhãn). Dán một mắt chỉ làm mắt đó thành keyframe và chỉ bỏ cờ của mắt đó; mắt kia và cờ của nó giữ nguyên (B26)."""
+        (khi đó frame phải đã có nhãn, trừ mắt shape: dán một mắt shape vào frame chưa có nhãn nào thì tạo shape mới ở đó).
+        Dán một mắt chỉ làm mắt đó thành keyframe và chỉ bỏ cờ của mắt đó; mắt kia và cờ của nó giữ nguyên (B26)."""
         self._guard_qc()
         every = {i for spec in EYES.values() for i in spec.ids}
         one = next((spec for spec in EYES.values() if set(pts) == set(spec.ids)), None)
@@ -478,7 +479,8 @@ class Session:
             self.flags.pop(frame, None)
             self.estimates.pop(frame, None)
         elif one is not None:
-            if not self.pins.get(frame) and frame not in self.labels:
+            eye = next(l for l, sp in EYES.items() if sp is one)
+            if self.kind[eye] != "shape" and not self.pins.get(frame) and frame not in self.labels:
                 raise ValueError("frame này chưa có nhãn mắt kia nên chưa dán được một mắt")
             self._push_undo()
             self.pins.setdefault(frame, {}).update({i: tuple(p) for i, p in pts.items()})
@@ -494,11 +496,14 @@ class Session:
 
     def swap_eyes(self) -> None:
         """Hoán đổi vai trò mattrai và matphai ở mọi frame ghim (sửa khi tool gán nhầm trái/phải). Một bước hoàn tác.
-        Mã nội bộ `eye_uid` đổi chỗ cùng dữ liệu (ẩn riêng / Pinned của giao diện đi theo mắt); ID đối tượng giữ theo label như trước."""
+        Mã nội bộ `eye_uid`, kiểu (`kind`) và ID shape đổi chỗ cùng dữ liệu (ẩn riêng / Pinned của giao diện đi theo mắt); ID đối tượng
+        của mắt track giữ theo label như trước."""
         a, b = EYES["mattrai"].ids, EYES["matphai"].ids
         mp = {**dict(zip(a, b)), **dict(zip(b, a))}
         self._push_undo()
         self.eye_uid = {"mattrai": self.eye_uid["matphai"], "matphai": self.eye_uid["mattrai"]}
+        self.kind = {"mattrai": self.kind["matphai"], "matphai": self.kind["mattrai"]}
+        self.shape_ids = {"mattrai": self.shape_ids["matphai"], "matphai": self.shape_ids["mattrai"]}
         self.pins = {f: {mp[i]: p for i, p in pts.items()} for f, pts in self.pins.items()}
         self.flags = {f: {mp[i]: k for i, k in fl.items()} for f, fl in self.flags.items()}
         self.estimates = {f: {mp[i]: r for i, r in es.items()} for f, es in self.estimates.items()}
@@ -507,6 +512,7 @@ class Session:
     def propagate(self, frame: int, count: int = 0, direction: int = 1, start: int | None = None, end: int | None = None) -> int:
         """Nhân nhãn đang hiển thị ở `frame` sang các frame khác (mỗi frame thành frame ghim, chép cả cờ), như hộp "Confirm propagation" của CVAT:
         `count` bản sao theo `direction` (+1 sang sau, -1 sang trước), hoặc cả khoảng frame [start, end] nếu có start và end.
+        Mắt shape nhân thành shape mới (mỗi frame đích một ID riêng, `recompute` cấp), mắt track nhân thành keyframe như cũ.
         Trả về số frame đã nhân (không tính chính `frame`)."""
         self._guard_qc()
         if frame not in self.labels and frame not in self.pins:
@@ -589,6 +595,8 @@ class Session:
                     del store[frame]
         if not self.pins[frame]:
             del self.pins[frame]
+            self.flags.pop(frame, None)                          # frame hết ghim thì không còn gì để mang cờ / ước lượng (như delete_eye)
+            self.estimates.pop(frame, None)
         self.touched[label] = time.time()
         if not self._eye_has_labels(label):
             self.eye_uid[label] = next(_EYE_UIDS)                # hết shape: vẽ lại mắt này là đối tượng mới (như delete_eye)
@@ -841,13 +849,15 @@ class Session:
 
     # ---- lưu / mở phiên làm việc (chỉ toạ độ và cờ, không có ảnh) ----
     def state(self) -> dict:
-        """Mọi thứ người dùng đã làm: với từng bộ đối tượng, các frame ghim, cờ Occluded/Outside, điểm ước lượng và ID. Nhãn do tool tính được tính lại khi mở."""
-        out = {"version": 2, "frames": self.n_frames, "names": [self.names[0], self.names[-1]], "deleted": sorted(self.deleted),
+        """Mọi thứ người dùng đã làm: với từng bộ đối tượng, các frame ghim, cờ Occluded/Outside, điểm ước lượng, ID, kiểu (track/shape) của
+        từng mắt và ID của từng shape. Nhãn do tool tính được tính lại khi mở. Bản 3 thêm `kind` và `shape_ids`; bản 1, 2 mở được (toàn track)."""
+        out = {"version": 3, "frames": self.n_frames, "names": [self.names[0], self.names[-1]], "deleted": sorted(self.deleted),
                "cur": self.cur, "next_id": self.next_id,
                "layers": [{"pins": {str(f): {str(i): list(p) for i, p in pts.items()} for f, pts in L.pins.items()},
                            "flags": {str(f): {str(i): k for i, k in fl.items()} for f, fl in L.flags.items()},
                            "estimates": {str(f): {str(i): r for i, r in es.items()} for f, es in L.estimates.items()},
-                           "ids": dict(L.obj_ids)} for L in self.layers]}
+                           "ids": dict(L.obj_ids), "kind": dict(L.kind),
+                           "shape_ids": {l: {str(f): v for f, v in d.items()} for l, d in L.shape_ids.items()}} for L in self.layers]}
         if self.cvat is not None:
             out["cvat"] = dict(self.cvat)                        # mốc cập nhật của job lúc bắt đầu làm việc (để biết CVAT có bị sửa không)
             out["unsent"] = bool(self.unsent)                    # còn công chưa gửi lên CVAT (Đăng xuất dựa vào đây để hỏi trước khi xoá file phiên)
@@ -856,7 +866,7 @@ class Session:
     def load_state(self, d: dict) -> None:
         """Nạp file phiên. Lỗi khi tính lại (ví dụ mất kết nối CVAT) thì phiên trở về đúng như trước khi gọi và lỗi được ném lại."""
         self._guard_qc()
-        if d.get("version") not in (1, 2) or d.get("frames") != self.n_frames:
+        if d.get("version") not in (1, 2, 3) or d.get("frames") != self.n_frames:
             raise ValueError("file phiên làm việc không khớp thư mục ảnh này")
         saved_names = d.get("names")                                    # tên ảnh đầu, cuối lúc lưu (file bản 1 chưa có): cùng số frame mà ảnh khác thì không nạp
         now_names = [self.names[0], self.names[-1]]
@@ -873,13 +883,17 @@ class Session:
             raise
 
     def _load_state(self, d: dict) -> None:
-        parts = d["layers"] if d["version"] == 2 else [d]               # bản 1 chỉ có một bộ đối tượng
+        parts = d["layers"] if d["version"] >= 2 else [d]               # bản 1 chỉ có một bộ đối tượng
         self.layers = [Layer() for _ in parts] or [Layer()]
         for L, p in zip(self.layers, parts):
             L.pins = {int(f): {int(i): tuple(q) for i, q in pts.items()} for f, pts in p.get("pins", {}).items()}
             L.flags = {int(f): {int(i): k for i, k in fl.items()} for f, fl in p.get("flags", {}).items()}
             L.estimates = {int(f): {int(i): r for i, r in es.items()} for f, es in p.get("estimates", {}).items()}
             L.obj_ids = {k: int(v) for k, v in p.get("ids", {}).items()}
+            kinds = p.get("kind") or {}                                 # bản 1, 2 không có: toàn track
+            L.kind = {l: (kinds.get(l) if kinds.get(l) in KINDS else "track") for l in EYES}
+            sh = p.get("shape_ids") or {}
+            L.shape_ids = {l: {int(f): int(v) for f, v in (sh.get(l) or {}).items()} for l in EYES}
         self.cur = min(int(d.get("cur", 0)), len(self.layers) - 1)
         saved = d.get("cvat")
         if self.cvat is not None and isinstance(saved, dict) and saved.get("job") == self.cvat.get("job"):
@@ -888,7 +902,7 @@ class Session:
             self.deleted = set(self.source.deleted)                     # job CVAT: frame xoá do CVAT quyết, không theo file phiên
         else:
             self.deleted = set(int(f) for f in d.get("deleted", []))
-        top = max([v for L in self.layers for v in L.obj_ids.values()] + [0])
+        top = max([v for L in self.layers for v in list(L.obj_ids.values()) + [v for d in L.shape_ids.values() for v in d.values()]] + [0])
         self.next_id = int(d.get("next_id", top + 9))
         self._undo.clear()
         self._redo.clear()

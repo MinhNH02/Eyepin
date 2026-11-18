@@ -2,6 +2,7 @@
 không bám, frame không ghim thì không có nhãn; mắt kiểu track tính y như cũ.
 
 Ảnh giả của `test_tracking` (không dùng dữ liệu công ty)."""
+import json
 import os
 import shutil
 import sys
@@ -12,6 +13,7 @@ import cv2
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
+from eyepin import evaluate  # noqa: E402
 from eyepin.geometry import EYES  # noqa: E402
 from eyepin.session import Session  # noqa: E402
 import test_tracking as T  # noqa: E402
@@ -174,6 +176,128 @@ class ShapeSessionTests(unittest.TestCase):
         s.delete_shape("mattrai", 3)
         self.assertEqual(len(s.layers), 1)
         self.assertEqual(s.eye_keyframes("matphai"), [0])
+
+    # ---- Task 4: hoàn tác, file phiên, dán, nhân, đổi label, đo ----
+    def test_undo_redo_restore_kind_and_ids(self):             # điểm soi 4
+        s = self.shapes_at(3, 5)
+        s.delete_shape("mattrai", 3)
+        self.assertTrue(s.undo())
+        self.assertEqual(s.shape_ids["mattrai"], {3: 1, 5: 10})
+        self.assertTrue(s.redo())
+        self.assertEqual(s.shape_ids["mattrai"], {5: 10})
+        fresh = Session(self.dir)
+        fresh.pin_eye(3, "mattrai", four("mattrai", 3), kind="shape")
+        self.assertTrue(fresh.undo())                              # hoàn tác lần vẽ đầu tiên: mắt trống, kiểu về track
+        self.assertEqual(fresh.eye_kind("mattrai"), "track")
+        self.assertEqual(fresh.shape_ids["mattrai"], {})
+
+    def test_session_file_roundtrip_v3(self):
+        s = self.shapes_at(3, 5)
+        s.pin_eye(0, "matphai", four("matphai", 0))                # matphai là track: file phải phân biệt được
+        s.toggle_flag(3, 14, "occluded")
+        d = s.state()
+        self.assertEqual(d["version"], 3)
+        self.assertEqual(d["layers"][0]["kind"], {"mattrai": "shape", "matphai": "track"})
+        self.assertEqual(d["layers"][0]["shape_ids"], {"mattrai": {"3": 1, "5": 10}, "matphai": {}})
+        back = Session(self.dir)
+        back.load_state(json.loads(json.dumps(d)))                 # qua JSON như file thật: khoá frame thành chuỗi
+        self.assertEqual(back.kind, s.kind)
+        self.assertEqual(back.shape_ids, s.shape_ids)
+        self.assertEqual(sorted(back.labels), sorted(s.labels))
+        for f, r in s.labels.items():
+            self.assertEqual(back.labels[f].points, r.points)
+        self.assertEqual(back.next_id, s.next_id)
+        back.pin_eye(8, "mattrai", four("mattrai", 8))             # ID mới không trùng ID đã nạp
+        self.assertEqual(back.shape_ids["mattrai"], {3: 1, 5: 10, 8: back.shape_ids["mattrai"][8]})
+        self.assertNotIn(back.shape_ids["mattrai"][8], (1, 10, back.obj_ids["matphai"]))
+
+    def test_load_without_next_id_stays_above_shape_ids(self):
+        s = self.shapes_at(3, 5)
+        d = s.state()
+        del d["next_id"]
+        back = Session(self.dir)
+        back.load_state(d)
+        back.pin_eye(8, "mattrai", four("mattrai", 8))
+        self.assertEqual(back.shape_ids["mattrai"], {3: 1, 5: 10, 8: 19})
+
+    def test_version_2_file_loads_as_tracks(self):             # điểm soi 1
+        s = Session(self.dir)
+        s.pin_eye(0, "mattrai", four("mattrai", 0))
+        s.pin_eye(0, "matphai", four("matphai", 0))
+        d = s.state()
+        d["version"] = 2
+        for L in d["layers"]:
+            del L["kind"], L["shape_ids"]
+        back = Session(self.dir)
+        back.load_state(d)
+        self.assertEqual(back.kind, {"mattrai": "track", "matphai": "track"})
+        self.assertEqual(sorted(back.labels), sorted(s.labels))
+        for f, r in s.labels.items():
+            self.assertEqual(back.labels[f].points, r.points)
+        d["version"] = 4
+        with self.assertRaises(ValueError):
+            Session(self.dir).load_state(d)
+
+    def test_paste_one_shape_eye_onto_empty_frame(self):
+        s = self.shapes_at(3)
+        pts = {i: p for i, p in s.pins[3].items() if i in ML.ids}
+        undo = len(s._undo)
+        s.paste_points(8, pts)
+        self.assertTrue(s.has_shape("mattrai", 8))
+        self.assertEqual(s.object_id("mattrai", 8), 10)
+        self.assertEqual(sorted(s.labels), [3, 8])
+        self.assertEqual(len(s._undo), undo + 1)
+        self.assertTrue(s.undo())
+        self.assertEqual(sorted(s.labels), [3])
+
+    def test_paste_one_track_eye_onto_empty_frame_still_refuses(self):
+        s = Session(self.dir)
+        s.pin_eye(10, "matphai", four("matphai", 10))             # track bám sang sau: frame 2 chưa có nhãn nào
+        was = self.state(s)
+        with self.assertRaises(ValueError):
+            s.paste_points(2, four("mattrai", 2) | {i: (1.0, 1.0) for i in ML.ids if i not in ML.pins})
+        self.assertEqual(self.state(s), was)
+
+    def test_propagate_makes_new_shapes(self):
+        s = self.shapes_at(3)
+        s.toggle_flag(3, 15, "occluded")
+        self.assertEqual(s.propagate(3, count=2), 2)
+        self.assertEqual(sorted(s.labels), [3, 4, 5])
+        self.assertEqual(len(set(s.shape_ids["mattrai"].values())), 3)
+        self.assertEqual(s.flags_at(5), {15: "occluded"})
+        self.assertEqual(s.eye_kind("mattrai"), "shape")
+
+    def test_swap_moves_kind_and_ids(self):
+        s = self.shapes_at(3)
+        s.pin_eye(0, "matphai", four("matphai", 0))
+        was_ids = dict(s.shape_ids["mattrai"])
+        s.swap_eyes()
+        self.assertEqual(s.eye_kind("matphai"), "shape")
+        self.assertEqual(s.eye_kind("mattrai"), "track")
+        self.assertEqual(s.shape_ids["matphai"], was_ids)
+        self.assertEqual(s.shape_ids["mattrai"], {})
+        self.assertTrue(s.has_shape("matphai", 3))
+        self.assertTrue(s.undo())
+        self.assertEqual(s.eye_kind("mattrai"), "shape")
+        self.assertEqual(s.shape_ids["mattrai"], was_ids)
+
+    def test_headturn_and_report_ignore_shape_eyes(self):
+        s = Session(self.dir)
+        for f in (3, 10, 20):
+            s.pin_eye(f, "mattrai", four("mattrai", f), kind="shape")
+            s.pin_eye(f, "matphai", four("matphai", f), kind="shape")
+        self.assertEqual(s.turns[0].turns, ())
+        self.assertEqual(s.turns[0].both_pins, 0)
+        ev = evaluate.evaluate(s)
+        self.assertEqual(ev.samples, [])
+        self.assertEqual(ev.pins, 0)
+
+    def test_delete_shape_clears_stale_flags_of_emptied_frame(self):
+        s = self.shapes_at(3, 5)
+        s.flags[3] = {22: "occluded"}                              # cờ mồ côi của điểm không còn ghim ở frame này
+        s.estimates[3] = {22: "x"}
+        s.delete_shape("mattrai", 3)
+        self.assertNotIn(3, s.pins); self.assertNotIn(3, s.flags); self.assertNotIn(3, s.estimates)
 
 
 if __name__ == "__main__":

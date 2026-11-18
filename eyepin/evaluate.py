@@ -123,8 +123,11 @@ def evaluate(session) -> Evaluation:
     for li in range(len(session.layers)):
         with session.layer_ctx(li):
             turns = session.turns[li].turns if li < len(session.turns) else ()
-            every_pin |= set(session.pins)
+            every_pin |= {f for f, pts in session.pins.items()          # frame ghim của mắt track; shape không phải ghim
+                          if any(session.kind[l] == "track" and set(EYES[l].ids) & set(pts) for l in EYES)}
             for label, spec in EYES.items():
+                if session.kind[label] == "shape":
+                    continue                                     # shape không có keyframe, không bám: không có gì để so với đường thẳng / bám
                 keys = session.eye_keyframes(label)
                 gaps += [b - a for a, b in zip(keys, keys[1:])]
                 for k, g in enumerate(keys):

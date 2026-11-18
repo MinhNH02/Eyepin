@@ -145,11 +145,12 @@ def for_session(session) -> list[TurnReport]:
     for i in range(len(session.layers)):
         with session.layer_ctx(i):
             keys = {label: set(session.eye_keyframes(label)) for label in EYES}
+            shape_ids = {i for label, spec in EYES.items() if session.kind[label] == "shape" for i in spec.ids}   # mắt shape không bám nên không dùng
             points, scores = {}, {}
             for f, r in session.labels.items():
                 outside = {pid for pid, kind in session.flags_at(f).items() if kind == "outside"}
-                points[f] = {pid: p for pid, p in r.points.items() if pid not in outside}
-                scores[f] = r.scores
+                points[f] = {pid: p for pid, p in r.points.items() if pid not in outside and pid not in shape_ids}
+                scores[f] = {l: v for l, v in r.scores.items() if session.kind[l] != "shape"}
             out.append(detect(session.n_frames, points, scores, keys, session.need_pin, session.deleted))
     return out
 
