@@ -296,6 +296,7 @@ class CvatMixin:
         elif url:
             self._cvat_ui["url"].set(url)
         if relogin:
+            self._cvat_show_form(True)
             self._cvat_ui["status"].set("Phiên đăng nhập CVAT đã hết hạn hoặc chưa đăng nhập. Hãy đăng nhập lại (ghim của bạn vẫn còn nguyên).")
             self._cvat_ui["password"].set("")
         elif new and self.cvat_client is not None:
@@ -303,20 +304,26 @@ class CvatMixin:
 
     def _build_cvat_dialog(self, d: tk.Toplevel, url: str | None):
         saved = self.settings.get("cvat") or {}
+        signed_in = self.cvat_client is not None      # đã đăng nhập (màn ngoài hoặc lần mở trước): không bắt nhập lại
         ui = self._cvat_ui = {
             "url": tk.StringVar(value=url or (self.cvat_client.url if self.cvat_client else None) or saved.get("url") or DEFAULT_URL),
-            "user": tk.StringVar(value=saved.get("user", "")), "password": tk.StringVar(), "status": tk.StringVar(value="Nhập tên đăng nhập và mật khẩu của CVAT trên máy."),
-            "tasks": [], "jobs": [],
+            "user": tk.StringVar(value=saved.get("user", "")), "password": tk.StringVar(),
+            "status": tk.StringVar(value="Đã đăng nhập. Đang lấy danh sách task…" if signed_in else "Nhập tên đăng nhập và mật khẩu của CVAT trên máy."),
+            "tasks": [], "jobs": [], "form": [],
         }
         d.columnconfigure(1, weight=1)
         for r, (text, key, show) in enumerate((("Địa chỉ CVAT", "url", ""), ("Tên đăng nhập", "user", ""), ("Mật khẩu", "password", "•"))):
-            ttk.Label(d, text=text).grid(row=r, column=0, sticky="w", padx=(12, 8), pady=3)
+            lab = ttk.Label(d, text=text)
+            lab.grid(row=r, column=0, sticky="w", padx=(12, 8), pady=3)
             e = ttk.Entry(d, textvariable=ui[key], width=40, show=show)
             e.grid(row=r, column=1, sticky="we", padx=(0, 6), pady=3)
+            ui["form"] += [lab, e]
             if key == "password":
                 e.bind("<Return>", lambda ev: self.cvat_login())
                 ui["password_entry"] = e
-        ttk.Button(d, text="Đăng nhập", command=self.cvat_login).grid(row=2, column=2, padx=(0, 12), pady=3)
+        login_btn = ttk.Button(d, text="Đăng nhập", command=self.cvat_login)
+        login_btn.grid(row=2, column=2, padx=(0, 12), pady=3)
+        ui["form"].append(login_btn)
         ttk.Label(d, textvariable=ui["status"], wraplength=520, style="Muted.TLabel").grid(row=3, column=0, columnspan=3, sticky="w", padx=12, pady=(2, 6))
         ttk.Label(d, text="Task").grid(row=4, column=0, sticky="w", padx=12)
         ttk.Label(d, text="Job (bấm đúp để mở)").grid(row=4, column=1, sticky="w")
@@ -328,12 +335,25 @@ class CvatMixin:
         ui["jobs_lb"].bind("<Double-Button-1>", lambda ev: self.cvat_open_selected())
         bar = ttk.Frame(d)
         bar.grid(row=6, column=0, columnspan=3, sticky="e", padx=12, pady=(4, 10))
+        ui["switch_btn"] = ttk.Button(bar, text="Đổi tài khoản", command=lambda: self._cvat_show_form(True))
+        ui["switch_btn"].pack(side="left", padx=4)
         ttk.Button(bar, text="Mở", command=self.cvat_open_selected).pack(side="left", padx=4)
         ttk.Button(bar, text="Đóng", command=d.destroy).pack(side="left", padx=4)
         d.bind("<Escape>", lambda ev: d.destroy())
         d.bind("<Destroy>", lambda ev: self._cvat_dialog_closed() if ev.widget is d else None)
         d.transient(self.root)
-        if ui["user"].get():
+        self._cvat_show_form(not signed_in)
+        if not signed_in and ui["user"].get():
+            ui["password_entry"].focus_set()
+
+    def _cvat_show_form(self, show: bool):
+        """Form đăng nhập (địa chỉ, tên, mật khẩu, nút) hiện khi cần đăng nhập; đã đăng nhập thì ẩn, nút "Đổi tài khoản" đưa nó trở lại."""
+        ui = self._cvat_ui
+        for w in ui["form"]:
+            w.grid() if show else w.grid_remove()
+        btn = ui["switch_btn"]
+        btn.state(["disabled"] if show else ["!disabled"])
+        if show:
             ui["password_entry"].focus_set()
 
     def _cvat_dialog_closed(self):
@@ -384,6 +404,7 @@ class CvatMixin:
             self.settings["cvat"] = {"url": client.url, "user": user}
             self.save_settings()
             self._fill_cvat_tasks(tasks)
+            self._cvat_show_form(False)
             ui["status"].set("Đã đăng nhập. Chọn một task, rồi chọn job và bấm Mở.")
             after, job = self._cvat_after_login, self._cvat_job
             self._cvat_after_login = self._cvat_job = None
@@ -414,6 +435,7 @@ class CvatMixin:
             if not self._cvat_dialog_alive():
                 return
             if isinstance(err, LoginNeeded):
+                self._cvat_show_form(True)
                 ui["status"].set("Phiên đăng nhập CVAT đã hết hạn. Hãy đăng nhập lại.")
             elif err is not None:
                 ui["status"].set(str(err))
@@ -434,6 +456,8 @@ class CvatMixin:
             if not self._cvat_dialog_alive():
                 return
             if err is not None:
+                if isinstance(err, LoginNeeded):
+                    self._cvat_show_form(True)
                 ui["status"].set("Phiên đăng nhập CVAT đã hết hạn. Hãy đăng nhập lại." if isinstance(err, LoginNeeded) else str(err))
                 return
             ui["jobs"] = list(jobs)

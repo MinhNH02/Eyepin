@@ -344,6 +344,33 @@ class TestFrontDoor(G.CvatGuiCase):
         self.assertIn("clip", " ".join(app._cvat_ui["tasks_lb"].get(0, "end")))
         self.assertIsNone(app.s)
 
+    def test_job_picker_does_not_ask_to_log_in_again(self):
+        """Đã đăng nhập ở màn ngoài: hộp chọn job không hiện form đăng nhập, không bảo "nhập tên và mật khẩu"; có đường đổi tài khoản."""
+        d = self.door()
+        self.log_in(d)
+        app = d.app
+        ui = app._cvat_ui
+        self.assertNotIn("mật khẩu", ui["status"].get().lower())            # kể cả lúc danh sách task chưa về
+        self.assertTrue(all(w.winfo_manager() == "" for w in ui["form"]))   # form đăng nhập ẩn
+        self.wait(app)
+        self.assertEqual(ui["tasks_lb"].size(), 1)
+        self.assertTrue(all(w.winfo_manager() == "" for w in ui["form"]))
+        ui["switch_btn"].invoke()                                           # "Đổi tài khoản" hiện lại form
+        self.assertTrue(all(w.winfo_manager() == "grid" for w in ui["form"]))
+
+    def test_job_picker_shows_the_form_when_the_login_has_expired(self):
+        d = self.door()
+        self.log_in(d)
+        app = d.app
+        self.wait(app)
+        app._dialogs["cvat"].destroy()
+        app.cvat_client.use_token("het-han")                                 # CVAT từ chối khoá này (401)
+        app.open_cvat()
+        self.wait(app)
+        ui = app._cvat_ui
+        self.assertIn("hết hạn", ui["status"].get())
+        self.assertTrue(all(w.winfo_manager() == "grid" for w in ui["form"]))
+
     def test_login_with_a_job_from_the_command_line_opens_that_job(self):
         d = self.door(job=7)
         self.log_in(d)
