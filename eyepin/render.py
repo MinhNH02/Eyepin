@@ -451,7 +451,9 @@ def render_timeline(session: Session, current: int, width: int = 960, height: in
 def status_text(session: Session, f: int) -> str:
     parts = [f"Frame {f}/{session.n_frames - 1} ({session.names[f]})"]
     if f in session.pins:
-        parts.append("FRAME GHIM")
+        here = [l for l, sp in EYES.items() if set(sp.ids) & set(session.pins[f])]          # mắt có nhãn ghim ở frame này
+        # mọi mắt có nhãn ở đây đều là shape: frame này không là keyframe của track nào
+        parts.append("SHAPE" if here and all(session.has_shape(l, f) for l in here) else "FRAME GHIM")
         marks = session.flags.get(f, {})
         if marks:
             parts.append("Occluded: " + ",".join(str(i) for i, k in sorted(marks.items()) if k == "occluded") if any(k == "occluded" for k in marks.values()) else "")

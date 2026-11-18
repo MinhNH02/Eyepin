@@ -212,12 +212,24 @@ class ObjectsMixin:
 
     # ---------- sắp xếp, ẩn/khoá tất cả ----------
     def _object_rows(self) -> list[tuple[int, str]]:
-        """Các dòng của panel: (chỉ số bộ đối tượng, nhãn mắt), theo cách sắp xếp đang chọn. Bộ đầu luôn hiện cả hai mắt (kể cả mắt đã xoá),
-        các bộ khác chỉ hiện mắt đang có."""
+        """Các dòng của panel: (chỉ số bộ đối tượng, nhãn mắt), theo cách sắp xếp đang chọn. Mắt track: bộ đầu luôn hiện cả hai mắt (kể cả
+        mắt đã xoá), các bộ khác chỉ hiện mắt đang có. Mắt shape (mọi bộ, kể cả bộ đầu) chỉ có dòng ở frame có shape của nó, như CVAT: mỗi
+        shape là một đối tượng của riêng frame đó."""
         s = self.s
-        rows = [(0, l) for l in EYES] + [(i, l) for i, L in enumerate(s.layers) if i > 0 for l in EYES if l in L.obj_ids]
+
+        def shown(i: int, l: str) -> bool:
+            with s.layer_ctx(i):
+                if s.eye_kind(l) == "shape":
+                    return s.has_shape(l, self.f)
+            return i == 0 or l in s.layers[i].obj_ids
+
+        def key_id(r) -> int:
+            with s.layer_ctx(r[0]):
+                n = s.object_id(r[1], self.f)
+            return n if n is not None else 10 ** 9 + r[0] * 10 + list(EYES).index(r[1])
+
+        rows = [(i, l) for i in range(len(s.layers)) for l in EYES if shown(i, l)]
         mode = self.sort_var.get() if hasattr(self, "sort_var") else SORTS[0]
-        key_id = lambda r: s.layers[r[0]].obj_ids.get(r[1], 10 ** 9 + r[0] * 10 + list(EYES).index(r[1]))
         if mode == SORTS[1]:
             return sorted(rows, key=key_id, reverse=True)
         if mode == SORTS[2]:
@@ -381,9 +393,20 @@ class ObjectsMixin:
 
     @edit_command
     def object_remove(self):
-        if not self._sel_eye():
+        """Menu ⋮ "Bỏ keyframe ở frame này". Mắt track: bỏ frame ghim này (như trước). Mắt shape không có keyframe: xoá shape của RIÊNG mắt
+        đó ở frame này (như Del), keyframe của mắt khác ở frame này giữ nguyên."""
+        label = self._sel_eye()
+        if not label:
             return
-        if self.f in self.s.pins:
+        if self.s.eye_kind(label) == "shape" and label in self.locked:
+            self.notice = f"{label} đang bị khoá; mở khoá trước khi xoá shape."
+        elif self.s.eye_kind(label) == "shape":
+            try:
+                self.s.delete_shape(label, self.f)
+                self.notice = f"Đã xoá shape {label} ở frame {self.f} (shape không có keyframe; Ctrl+Z để hoàn tác)."
+            except ValueError as err:
+                self.notice = str(err)
+        elif self.f in self.s.pins:
             self.s.remove_pin(self.f)
             self.notice = "Đã bỏ keyframe ở frame này."
         else:
@@ -471,7 +494,7 @@ class ObjectsMixin:
     def _label_dot_color(self, label: str) -> str:
         """Màu chấm của label ở tab Labels = màu mắt `label` của người đang chọn trên ảnh và trên thẻ đối tượng: chỉ số màu là ID đối tượng - 1
         (như `render` và thẻ), không phải thứ tự label (B20); chưa có ID (chưa ghim) thì dùng thứ tự label + 1."""
-        n = self.s.obj_ids.get(label) if self.s else None
+        n = self.s.object_id(label, self.f) if self.s else None          # mắt shape: ID của shape ở frame này (như thẻ và ảnh)
         b, g, r = self.look.color_of(label, (n or list(EYES).index(label) + 1) - 1)
         return f"#{int(r):02x}{int(g):02x}{int(b):02x}"
 

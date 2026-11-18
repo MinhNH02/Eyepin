@@ -9,6 +9,9 @@ Bố cục chép từ mã nguồn CVAT v2.75.0 (`object-item-basics.tsx`, `objec
     ┃ ▾ DETAILS                                               bấm để mở/đóng danh sách điểm
     ┃     điểm 14   ghim     Occluded  ⊘ ◎                     mỗi điểm một dòng; bấm dòng = chọn điểm; hai nút Outside / Occluded của điểm
 
+Thẻ shape (`card["kind"] == "shape"`, chữ loại `SKELETON SHAPE`): không có hàng 2, hàng 3 chỉ còn Lock, Occluded, Hidden, Pinned như
+nhánh shape của `object-item-buttons.tsx`; DETAILS giữ hai nút Outside / Occluded của từng điểm.
+
 `ObjectList` có API giống `ttk.Treeview` (insert, delete, get_children, exists, item, set, selection*, identify_row, see) để mã
 của App đang dùng `App.tree` chạy tiếp được. Dòng cấp 1 (iid `eye:<label>[@layer]`) là một thẻ; dòng cấp 2 (`pt:<id>[@layer]`) là
 một dòng điểm trong DETAILS của thẻ đó; `values` của mọi dòng theo cột `(vai, sao, trang)`.
@@ -38,7 +41,8 @@ SWITCH_ICONS = {"outside": ("outside", "inside"), "lock": ("lock", "unlock"), "o
 # phím mặc định (CVAT) theo mã hành động của `shortcuts.py`; App truyền phím hiện hành qua `keys`
 DEFAULT_KEYS = {"outside": "o", "lock": "l", "occluded": "q", "hide": "h", "keyframe": "k", "pinned": "p",
                 "prev_keyframe": "e", "next_keyframe": "r"}
-CARD_DEFAULT = {"id": None, "label": "", "color": theme.MUTED, "type": "SKELETON TRACK", "status": "",
+SHAPE_HIDDEN = NAV + ("outside", "keyframe")                 # thẻ shape (CVAT object-item-buttons.tsx): không có các nút này
+CARD_DEFAULT = {"id": None, "label": "", "color": theme.MUTED, "type": "SKELETON TRACK", "status": "", "kind": "track",
                 "outside": False, "lock": False, "occluded": False, "hidden": False, "keyframe": False, "pinned": False,
                 "has_prev": False, "has_next": False, "has_first": False, "has_last": False,
                 "label_hidden": False}      # label ẩn cho mọi đối tượng (tab Labels): nút Hidden của thẻ mờ, chữ khi trỏ chuột nói lý do
@@ -170,6 +174,7 @@ class _Card(_Cached):
         plain += [r1, left, self.id_lbl, typ, self.type_lbl, self.status_lbl]
 
         # hàng 2 và 3 (object-item-buttons, track): canh giữa, các nút cách đều nhau (justify='space-around')
+        rows = []
         for names in (NAV, SWITCHES):
             row = tk.Frame(body, bg=CARD_BG)
             row.pack(fill="x", padx=(0, 18))
@@ -178,6 +183,8 @@ class _Card(_Cached):
                 b = self.btn[name] = ol._button(row, name, lambda _b, a=name: ol._act(a, iid), iid)
                 b.grid(row=0, column=col)
             plain.append(row)
+            rows.append(row)
+        self.nav_row, self.sw_row = rows
 
         # DETAILS (object-item-details): đầu mục bấm được + danh sách dòng điểm
         head = self.det_head = tk.Frame(body, bg=CARD_BG)
@@ -222,6 +229,7 @@ class _Card(_Cached):
         self._put("id", ident, lambda v: self.id_lbl.configure(text=v))
         self._put("type", str(c["type"]), lambda v: self.type_lbl.configure(text=v))
         self._put("status", str(c["status"] or ""), lambda v: self.status_lbl.configure(text=f" · {v}" if v else ""))
+        self._put("kind", c["kind"], self._show_kind)
         if self.cb.get() != c["label"]:
             self.cb.set(c["label"])
         locked = bool(c["lock"])
@@ -247,6 +255,22 @@ class _Card(_Cached):
         items = ol._items
         for pid in self.order:
             self.rows[pid].update(items[pid], pid in sel, locked)
+
+    def _show_kind(self, kind: str):
+        """Bộ nút theo kiểu đối tượng (CVAT object-item-buttons.tsx): shape không có hàng điều hướng keyframe, Outside và Keyframe
+        (Outside chỉ còn ở từng điểm trong DETAILS). `grid_remove` nhớ ô của nút nên đổi lại về track thì `grid()` trả đúng chỗ cũ."""
+        shape = kind == "shape"
+        for name in SHAPE_HIDDEN:
+            if shape:
+                self.btn[name].grid_remove()
+            else:
+                self.btn[name].grid()
+            if name in SWITCHES:                                    # cột trống không giữ chỗ (uniform): bốn nút còn lại dàn đều cả hàng
+                self.sw_row.columnconfigure(SWITCHES.index(name), weight=0 if shape else 1, uniform="" if shape else "b")
+        if shape:
+            self.nav_row.pack_forget()                              # hàng không còn nút nào: bỏ cả hàng, không để lại khoảng trống
+        elif not self.nav_row.winfo_manager():
+            self.nav_row.pack(fill="x", padx=(0, 18), before=self.sw_row)
 
     def _show_head(self, on: bool):
         """Đầu mục DETAILS chỉ hiện khi thẻ có dòng điểm (CVAT: chỉ hiện khi có chi tiết)."""

@@ -51,6 +51,7 @@ class ShapeGuiTests(unittest.TestCase):
         """Vẽ một mắt ở `frame` đúng như người dùng: begin_draw, bản nháp 4 điểm, Apply."""
         app.go(frame)
         app.begin_draw(label, "points", kind=kind)
+        app.pinning, app.clicks = None, []                 # như `_press_draw` sau 4 cú bấm: hết chế độ bấm điểm, còn bản nháp
         app.draft = {"label": label, "four": four(label, frame)}
         app.apply_draft()
 
@@ -101,20 +102,28 @@ class ShapeGuiTests(unittest.TestCase):
             self.assertNotEqual(app.notice, "")
             self.assertEqual(self.snap(app.s), before)
 
+    def leave_shape_frame(self, app, frame=6):
+        """Chọn mattrai (shape ở frame 3) rồi sang `frame` không có shape của nó: từ Task 8 thẻ của nó biến mất nên lựa chọn bị bỏ."""
+        app.go(3)
+        app.select_eye("mattrai", quiet=True)
+        app.go(frame)
+        self.assertFalse(app.tree.exists("eye:mattrai"))
+        self.assertEqual(app.tree.selection(), ())
+
     def test_flag_on_frame_without_shape_says_no_label(self):
-        """Mắt shape đang chọn nhưng frame này không có shape của nó: cờ cả mắt và cờ một điểm không đổi gì, và thông báo nói đúng điều đó."""
+        """Mắt shape đang chọn nhưng frame này không có shape của nó: cờ cả mắt và cờ một điểm không đổi gì, và thông báo nói đúng điều đó.
+        Từ Task 8 panel không còn thẻ nào để chọn mắt đó ở frame này, nên lựa chọn được giả lập (`_selected`) để giữ chốt chặn phòng thủ."""
         app = self.make_app()
         self.draw(app, 3)
-        app.go(6)                                                  # frame không có shape của mattrai
-        app.select_eye("mattrai", quiet=True)
+        self.leave_shape_frame(app)                                # frame không có shape của mattrai
         before = self.snap(app.s)
+        app._selected = lambda: ("mattrai", None)                  # cả mắt
         app.notice = ""
-        app.toggle_flag("occluded")                                # cả mắt
+        app.toggle_flag("occluded")
         self.assertIn("chưa có nhãn của mattrai", app.notice)
         self.assertNotIn("bỏ", app.notice)
         self.assertEqual(self.snap(app.s), before)
-        app.tree.selection_set("pt:14")                            # một điểm (dòng điểm 14 trong DETAILS)
-        self.assertEqual(app._selected(), ("mattrai", 14))
+        app._selected = lambda: ("mattrai", 14)                    # một điểm (dòng điểm 14 trong DETAILS)
         app.notice = ""
         app.toggle_flag("occluded")
         self.assertIn("chưa có nhãn của mattrai", app.notice)
@@ -124,13 +133,134 @@ class ShapeGuiTests(unittest.TestCase):
     def test_delete_on_frame_without_shape_shows_message(self):
         app = self.make_app()
         self.draw(app, 3)
-        app.go(6)
-        app.select_eye("mattrai", quiet=True)
+        self.leave_shape_frame(app)
         before = self.snap(app.s)
+        app.notice = ""
+        app.delete_label()                                         # không còn gì đang chọn: chỉ nhắc chọn, không đổi gì
+        self.assertIn("Chọn một mắt", app.notice)
+        self.assertEqual(self.snap(app.s), before)
+        app._selected = lambda: ("mattrai", None)                  # chốt chặn phòng thủ: lỗi của session hiện ra, không đổi gì
         app.notice = ""
         app.delete_label()
         self.assertIn("không có shape", app.notice)
         self.assertEqual(self.snap(app.s), before)
+
+    # ---------- Task 8: thẻ SKELETON SHAPE, dòng trạng thái ----------
+    def cards(self, app) -> dict:
+        return {i: app.tree.item(i, "card") for i in app.tree.get_children()}
+
+    def test_card_only_on_frames_with_a_shape(self):
+        app = self.make_app()
+        self.draw(app, 3)
+        app.go(3)
+        c = self.cards(app)
+        mine = [i for i in c if i.startswith("eye:mattrai")]
+        self.assertEqual(len(mine), 1)
+        self.assertEqual(c[mine[0]]["type"], "SKELETON SHAPE")
+        self.assertEqual(c[mine[0]]["kind"], "shape")
+        self.assertEqual(c[mine[0]]["id"], 1)
+        self.assertEqual(c[mine[0]]["status"], "")
+        self.assertEqual(app.items_var.get(), f"Items: {len(c)}")
+        app.go(4)
+        c = self.cards(app)
+        self.assertFalse(any(i.startswith("eye:mattrai") for i in c))
+        self.assertEqual(app.items_var.get(), f"Items: {len(c)}")
+
+    def test_card_id_follows_the_frame(self):
+        app = self.make_app()
+        self.draw(app, 3)
+        self.draw(app, 5)
+        app.go(5)
+        card = app.tree.item("eye:mattrai", "card")
+        self.assertEqual(card["id"], 10)
+        for k in ("keyframe", "has_first", "has_last", "has_prev", "has_next", "outside"):
+            self.assertIs(card[k], False, k)
+        self.assertEqual(app.tree.card_texts("eye:mattrai")[:2], ("#10", "SKELETON SHAPE"))
+        app.select_eye("mattrai", quiet=True)
+        self.assertIn("#10", app._handle_arg()[3])                 # chữ cạnh khung chọn trên ảnh: ID của shape ở frame này
+        app.go(3)
+        self.assertEqual(app.tree.item("eye:mattrai", "card")["id"], 1)
+
+    def test_drawn_id_is_the_shape_id(self):
+        """Chữ cạnh mắt trên ảnh (luôn hiện chữ) mang ID của shape ở frame này, không phải số thứ tự label."""
+        app = self.make_app()
+        self.draw(app, 3)
+        self.draw(app, 5)
+        app.look.text_always = True
+        app.go(5)
+        app.refresh()
+        texts = [app.canvas.itemcget(i, "text") for i in app.canvas.find_withtag("ov") if app.canvas.type(i) == "text"]
+        self.assertTrue(any(t.startswith("#10 MATTRAI") for t in texts), texts)
+
+    def test_status_text_says_shape(self):
+        from eyepin.render import status_text
+        app = self.make_app()
+        self.draw(app, 3)
+        text = status_text(app.s, 3)
+        self.assertIn("SHAPE", text)
+        self.assertNotIn("FRAME GHIM", text)
+        self.draw(app, 3, label="matphai", kind="track")          # có một mắt track ghim ở frame này: vẫn là frame ghim
+        self.assertIn("FRAME GHIM", status_text(app.s, 3))
+
+    def test_track_cards_unchanged(self):
+        app = self.make_app()
+        self.draw(app, 3, kind="track")
+        app.go(3)
+        card = app.tree.item("eye:mattrai", "card")
+        self.assertEqual((card["kind"], card["type"], card["status"], card["keyframe"]), ("track", "SKELETON TRACK", "keyframe", True))
+        self.root.update_idletasks()
+        b = app.tree.buttons("eye:mattrai")
+        names = ("first", "prev", "next", "last", "outside", "lock", "occluded", "hidden", "keyframe", "pinned")
+        self.assertEqual([n for n in names if b[n].winfo_manager()], list(names))
+        self.assertIn("FRAME GHIM", app.status.get())
+        self.assertEqual(set(app.tree.get_children()), {"eye:mattrai", "eye:matphai"})
+
+    def test_shape_selected_from_panel_and_dragged_on_its_frame(self):
+        """Mắt shape chọn từ panel ở frame có shape: kéo một điểm chỉ sửa shape ở frame đó."""
+        from test_gui import Ev
+        app = self.make_app()
+        self.draw(app, 3)
+        self.draw(app, 5)
+        app.go(3)
+        app.tree.selection_set("eye:mattrai")
+        self.assertEqual(app._selected(), ("mattrai", None))
+        other = dict(app.s.pins[5])
+        before = app.s.pins[3][14]
+        sx, sy = app.view.to_screen(before)
+        app.hover = (sx, sy)
+        self.assertEqual(app._eye_at((sx, sy), visible_only=True), "mattrai")
+        self.assertEqual(app._nearest_pin_point((sx, sy), visible_only=True), 14)
+        app.on_press(Ev(sx, sy))
+        app.on_motion(Ev(sx + 20, sy))
+        app.on_release(Ev(sx + 20, sy))
+        self.assertGreater(app.s.pins[3][14][0], before[0] + 1)
+        self.assertEqual(app.s.pins[5], other)
+        self.assertEqual(sorted(app.s.pins), [3, 5])
+        app.tree.selection_set("pt:14")                            # dòng điểm của thẻ shape chọn được
+        self.assertEqual(app._selected(), ("mattrai", 14))
+
+    def test_shape_only_info_and_keyframe_jump(self):
+        """Người chỉ có shape: hộp Thông tin không có dòng "Keyframe khi xuất" rỗng; nhảy keyframe với mắt shape đang chọn nói rõ lý do."""
+        app = self.make_app()
+        self.draw(app, 3)
+        self.assertNotIn("Keyframe khi xuất", [k for k, _ in app._stat_rows()])
+        app.go(3)
+        app.select_eye("mattrai", quiet=True)
+        app.jump_pin(1)
+        self.assertEqual(app.f, 3)
+        self.assertIn("shape không có keyframe", app.notice)
+
+    def test_remove_keyframe_menu_on_shape_keeps_other_eye(self):
+        """Menu "Bỏ keyframe ở frame này" với mắt shape: chỉ xoá shape đó ở frame này (như Del), mắt track kia giữ keyframe."""
+        app = self.make_app()
+        self.draw(app, 3, label="matphai", kind="track")
+        self.draw(app, 3)
+        app.go(3)
+        app.select_eye("mattrai", quiet=True)
+        app.object_remove()
+        self.assertFalse(app.s.has_shape("mattrai", 3))
+        self.assertEqual(app.s.eye_keyframes("matphai"), [3])
+        self.assertIn("shape mattrai", app.notice)
 
     def test_paste_shape_to_another_frame(self):
         app = self.make_app()

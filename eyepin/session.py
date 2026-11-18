@@ -764,6 +764,11 @@ class Session:
             return None if frame is None else self.shape_ids[label].get(frame)
         return self.obj_ids.get(label)
 
+    def frame_ids(self, frame: int) -> dict[str, int]:
+        """ID đối tượng của từng mắt (người đang chọn) đang hiện ở `frame`: mắt track như `obj_ids`, mắt shape là ID của shape ở frame đó
+        (không có shape thì không có mục). Dùng cho chữ và màu theo đối tượng khi vẽ."""
+        return {l: n for l in EYES if (n := self.object_id(l, frame)) is not None}
+
     def eye_kind(self, label: str) -> str:
         """Kiểu của mắt `label` của người đang chọn: "track" hoặc "shape"."""
         return self.kind[label]
@@ -1055,8 +1060,9 @@ class Session:
                 continue
             with self.layer_ctx(i):
                 flags = self.flags_at(f)                          # cờ theo keyframe của từng mắt, như bộ đang chọn
+                ids = self.frame_ids(f)                           # mắt shape: ID của shape ở frame này
             out.append({"layer": i, "points": L.labels[f].points, "flags": flags,
-                        "est": L.estimates.get(f), "ids": dict(L.obj_ids), "source": "MANUAL" if f in L.pins else "AUTO"})
+                        "est": L.estimates.get(f), "ids": ids, "source": "MANUAL" if f in L.pins else "AUTO"})
         return out
 
     def points_at(self, f: int) -> dict[int, Point] | None:

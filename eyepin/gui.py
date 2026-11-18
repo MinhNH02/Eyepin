@@ -976,7 +976,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         rows = [("Thống kê (mỗi mắt)", f"Manually {manual} · Interpolated {total - manual} · Total {total}")]
         try:
             per_eye = " · ".join(f"{label} {len(t.keys)}" for label, t in s.build_tracks().items())   # B24: mỗi mắt một track, đếm từng mắt
-            rows.append(("Keyframe khi xuất", f"{per_eye} (người đang chọn; nội suy CVAT lệch tối đa 2 px)"))
+            if per_eye:                                          # người chỉ có mắt shape: không có track nào để đếm keyframe
+                rows.append(("Keyframe khi xuất", f"{per_eye} (người đang chọn; nội suy CVAT lệch tối đa 2 px)"))
         except ValueError:
             pass
         return rows
@@ -1484,21 +1485,25 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         label, _ = self._selected() if self.s else (None, None)
         return self.s.eye_keyframes(label) if label else sorted(self.s.pins)
 
+    def _no_keyframe(self, msg: str):
+        """Báo không có keyframe để nhảy tới; mắt đang chọn là shape thì nói rõ shape không có keyframe."""
+        label, _ = self._selected() if self.s else (None, None)
+        self.notice = f"{label} là shape: shape không có keyframe." if label and self.s.eye_kind(label) == "shape" else msg
+        self.refresh()
+
     def first_keyframe(self):
         ks = self._key_frames() if self.s else []
         if ks:
             self.go(ks[0])
         else:
-            self.notice = "Chưa có keyframe nào."
-            self.refresh()
+            self._no_keyframe("Chưa có keyframe nào.")
 
     def last_keyframe(self):
         ks = self._key_frames() if self.s else []
         if ks:
             self.go(ks[-1])
         else:
-            self.notice = "Chưa có keyframe nào."
-            self.refresh()
+            self._no_keyframe("Chưa có keyframe nào.")
 
     def jump_pin(self, step: int):
         if not self.s:
@@ -1506,8 +1511,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         ks = self._key_frames()
         cand = [g for g in ks if g > self.f] if step > 0 else [g for g in ks if g < self.f][::-1]
         if not cand:
-            self.notice = "Không còn keyframe nào theo hướng này."
-            self.refresh()
+            self._no_keyframe("Không còn keyframe nào theo hướng này.")
         else:
             self.go(cand[0])
 
@@ -1818,7 +1822,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         h = self._handle_for(label)
         if not h:
             return None
-        n = self.s.obj_ids.get(label)
+        n = self.s.object_id(label, self.f)                       # mắt shape: ID của shape ở frame này
         return h[0], h[1], h[3], ("" if self.look.text_always else f"{label.upper()}" + (f" #{n}" if n else ""))
 
     def _resize_hit(self, e) -> str | None:
@@ -2109,27 +2113,30 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
             with s.layer_ctx(layer):
                 pts = self._current_points()
                 flags = s.flags_at(self.f)
-                keys = s.eye_keyframes(label)
+                shape = s.eye_kind(label) == "shape"                     # dòng của mắt shape chỉ có ở frame có shape (`_object_rows`)
+                keys = s.eye_keyframes(label)                            # shape: [] (không có keyframe)
                 eye = self._eye_points(label)
-                star = "★" if self.f in keys else "☆"                     # ngôi sao đặc = frame này là keyframe của riêng đối tượng đó
+                star = "" if shape else ("★" if self.f in keys else "☆")   # ngôi sao đặc = frame này là keyframe của riêng đối tượng đó
                 in_file = s.qc and (s.points_at(self.f) or {}).keys() >= set(EYES[label].ids)        # QC: nhãn đọc từ job, chưa có điểm ghim nào
-                src = "keyframe" if self.f in keys else ("tool tính" if self.f in s.labels and eye else ("từ file" if eye or in_file else "chưa có"))
+                src = "" if shape else ("keyframe" if self.f in keys else
+                                        ("tool tính" if self.f in s.labels and eye else ("từ file" if eye or in_file else "chưa có")))
                 file_pts = (s.points_at(self.f) or {}) if in_file else {}   # QC: điểm đọc từ job có thật dù chưa có ghim (không phải "—")
-                n = s.obj_ids.get(label)
+                n = s.object_id(label, self.f)                           # shape: ID của shape ở frame này
                 gone = bool(s.pins) and eye is None
                 locked, pinned, hidden = label in self.locked, label in self.pinned_eyes, self._obj_hidden(layer, label)
                 mark = ("[khoá] " if locked else "") + ("[pinned] " if pinned else "") + ("[ẩn] " if hidden else "")
             on = lambda kind: bool(pts) and all(flags.get(i) == kind for i in EYES[label].ids)     # cờ của cả đối tượng: cả 8 điểm
             b, g, r = self.look.color_of(label, (n or list(EYES).index(label) + 1) - 1)
-            card = {"id": n, "label": label, "color": f"#{int(r):02x}{int(g):02x}{int(b):02x}", "type": "SKELETON TRACK",
-                    "status": "đã xoá" if gone else src, "outside": on("outside") and eye is not None,
+            card = {"id": n, "label": label, "color": f"#{int(r):02x}{int(g):02x}{int(b):02x}",
+                    "type": "SKELETON SHAPE" if shape else "SKELETON TRACK", "kind": "shape" if shape else "track",
+                    "status": "đã xoá" if gone else src, "outside": on("outside") and eye is not None and not shape,
                     "occluded": on("occluded") and eye is not None, "lock": locked, "hidden": hidden,
                     "label_hidden": not self.look.eyes.get(label, True), "keyframe": self.f in keys,
                     "pinned": pinned, "has_first": bool(keys) and keys[0] != self.f, "has_last": bool(keys) and keys[-1] != self.f,
                     "has_prev": any(k < self.f for k in keys), "has_next": any(k > self.f for k in keys)}
             eid = self._iid("eye", label, layer)
             self.tree.insert("", "end", iid=eid, text=(f"#{n}  " if n else "") + f"{mark}{label}" + ("  (không có nhãn)" if gone else ""),
-                             values=("skeleton track", star, "đã xoá" if gone else src), card=card)
+                             values=("skeleton shape" if shape else "skeleton track", star, "đã xoá" if gone else src), card=card)
             for pid in EYES[label].ids:
                 k = flags.get(pid)
                 state = {"occluded": "Occluded", "outside": "Outside"}.get(k, "" if (pts and pid in pts) or pid in file_pts else "—")
@@ -2692,7 +2699,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         sel = self._selected()[0]
         active = self._active_label()                 # con trỏ ở trên thẻ của mắt này: vẽ đậm, và nó là mắt "đang chọn" khi vẽ (độ đặc riêng)
         kw = dict(clicks=self.clicks, override=override, show_ids=self.show_ids, hide_labels=self.hide_labels, look=look,
-                  preview=self._preview_pts(), handle=self._handle_arg(), selected=active or sel, ids=s.obj_ids,
+                  preview=self._preview_pts(), handle=self._handle_arg(), selected=active or sel, ids=s.frame_ids(self.f),
                   hidden=frozenset(self.hidden_objs), active=active)
         self.canvas.delete(CanvasPainter.TAG)
         if look.opacity >= 0.999 and look.selected_opacity >= 0.999:

@@ -219,6 +219,38 @@ class ObjectListTest(unittest.TestCase):
         nx = [w.winfo_x() for w in nav]
         self.assertEqual(nx, sorted(nx))
 
+    def test_shape_card_buttons(self):
+        """Thẻ SKELETON SHAPE (CVAT object-item-buttons.tsx, nhánh shape): chỉ Lock, Occluded, Hidden, Pinned; không có bốn nút điều hướng
+        keyframe, Outside, Keyframe. Cùng iid đổi về track thì hiện lại đủ 10 nút."""
+        ol = self.ol
+        names = ("first", "prev", "next", "last", "outside", "lock", "occluded", "hidden", "keyframe", "pinned")
+        shape = card("mattrai", kind="shape", type="SKELETON SHAPE", status="", keyframe=False, has_prev=False, has_next=False,
+                     has_first=False, has_last=False)
+        fill(ol, cards={"mattrai": shape})
+        self.root.update_idletasks()
+        b = ol.buttons("eye:mattrai")
+        shown = [n for n in names if b[n].winfo_manager()]
+        self.assertEqual(sorted(shown, key=lambda n: b[n].winfo_x()), ["lock", "occluded", "hidden", "pinned"])
+        self.assertEqual(shown, ["lock", "occluded", "hidden", "pinned"])
+        gaps = {b[q].winfo_x() - b[p].winfo_x() for p, q in zip(shown, shown[1:])}
+        self.assertLessEqual(max(gaps) - min(gaps), 1)                  # bốn nút dàn đều, ô của nút đã ẩn không giữ chỗ
+        for n in ("first", "prev", "next", "last", "outside", "keyframe"):
+            self.assertEqual(b[n].winfo_manager(), "", n)
+        self.assertEqual(ol.card_texts("eye:mattrai")[1], "SKELETON SHAPE")
+        ol.item("eye:mattrai", card=card("mattrai"))                  # cùng iid về track (vd. hoàn tác): đủ nút như test_order_of_buttons_matches_cvat
+        self.root.update_idletasks()
+        self.assertEqual([n for n in names if b[n].winfo_manager()], list(names))
+        row3 = [b[k] for k in ("outside", "lock", "occluded", "hidden", "keyframe", "pinned")]
+        xs = [w.winfo_x() for w in row3]
+        self.assertEqual(xs, sorted(xs))
+        nx = [b[k].winfo_x() for k in ("first", "prev", "next", "last")]
+        self.assertEqual(nx, sorted(nx))
+        other = ol.buttons("eye:matphai")                                    # thẻ track chưa từng đổi kiểu: cùng vị trí nút
+        self.assertEqual(xs, [other[k].winfo_x() for k in ("outside", "lock", "occluded", "hidden", "keyframe", "pinned")])
+        self.assertEqual(nx, [other[k].winfo_x() for k in ("first", "prev", "next", "last")])
+        self.assertLess(b["first"].winfo_rooty(), b["lock"].winfo_rooty())     # hàng điều hướng lại nằm trên hàng nút
+        self.assertEqual(ol.card_texts("eye:mattrai")[1], "SKELETON TRACK")
+
     def test_activate_highlights(self):
         ol = self.ol
         fill(ol)
