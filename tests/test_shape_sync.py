@@ -206,6 +206,50 @@ class TestShapeSend(Sync):
         self.assertEqual(res.message, f"Đã gửi {plan.keyframes} keyframe mắt lên job #7; CVAT lưu khớp với EyePin.")
 
 
+class TestReopenMixedJobInQc(Sync):
+    """I1: mở lại job có track mắt lẫn shape mắt (EyePin tự tạo được job như vậy). Nhãn mắt hiện theo bản "CVAT for video", nơi mỗi shape là
+    track [f, f+1 cả 8 điểm Outside] (design/cvat-api-notes.md, "Shape mắt (2026-11-18)", câu 5). Shape không được kéo dài sang các frame sau."""
+
+    def test_shapes_do_not_smear_in_qc(self):
+        from test_cvatsource import MATPHAI, json_obj
+        job = self.setup_job()
+        s = self.session
+        t = s.source.frame_numbers[4]
+        s.pin_eye(4, "matphai", {i: T.pins_at(t)[i] for i in EYES["matphai"].pins})     # track matphai từ frame 4
+        shape_at(s, 1)
+        shape_at(s, 6)
+        aj = server_shapes_json(s)
+        aj["tracks"] = [json_obj(MATPHAI)]                                  # JSON có track mắt: nhãn mắt hiện theo bản video
+        job.annotations_json = aj
+        job.export_xml_by_format[VIDEO] = video_with_shapes(s)
+        q = open_job(self.cl, 7)
+        self.assertTrue(q.qc)
+        self.assertEqual(q.display_format, VIDEO)
+        self.assertEqual(sorted(q.ann.shapes["mattrai"]), [1, 6])
+        self.assertEqual(q.ann.tracks["mattrai"], [])
+        self.assertEqual(len(q.ann.tracks["matphai"]), 1)
+        for f in (1, 6):
+            self.assertEqual({i: q.points_at(f)[i] for i in EYES["mattrai"].ids},
+                             {i: (round(s.pins[f][i][0], 2), round(s.pins[f][i][1], 2)) for i in EYES["mattrai"].ids})
+        for f in (2, 3):
+            self.assertIsNone(q.points_at(f), f)                             # không có nhãn nào: lọc "chưa có nhãn" thấy frame này
+            self.assertTrue(q.matches(f, "nolabel"))
+        for f in (5, 7):
+            self.assertFalse(set(EYES["mattrai"].ids) & set(q.points_at(f)), f)
+        self.assertEqual([fd for fd in q.run_scan() if fd.label == "mattrai"], [])
+
+    def test_track_only_reopen_unchanged(self):
+        from test_cvatsource import MATPHAI, json_obj
+        job = self.setup_job()
+        s = self.session
+        pin_frames(s, [0, 4])
+        job.annotations_json = {"version": 1, "tags": [], "shapes": [], "tracks": [json_obj(MATPHAI)]}
+        job.export_xml_by_format[VIDEO] = server_video_xml(s)
+        q = open_job(self.cl, 7)
+        self.assertEqual(q.ann.shapes, {"mattrai": {}, "matphai": {}})
+        self.assertEqual([len(q.ann.tracks[l]) for l in EYES], [1, 1])
+
+
 class TestCompareDropsShapeTracks(unittest.TestCase):
     """`_compare` bỏ track một frame mà bản xuất video sinh ra từ shape, mỗi shape đã gửi bỏ nhiều nhất một track, không bỏ track thật.
     Job 8 frame (0..7). Track thật của tool: một keyframe ở frame f, mắt đứng yên, CVAT xuất mọi frame f..7. Shape của người khác cùng nhãn

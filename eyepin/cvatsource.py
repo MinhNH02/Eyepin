@@ -100,12 +100,37 @@ def base_format(annotations_json: dict, eye_label_ids: set[int] | None = None) -
     return base, display
 
 
+def _shapes_from_video(ann: cvatxml.Annotations, annotations_json: dict, labels: list[dict], nums: list[int]) -> None:
+    """Nhãn mắt hiện theo bản "CVAT for video" mà job có shape mắt: bản xuất đó đổi mỗi shape thành track [f, f+1 cả 8 điểm Outside, thẻ
+    <skeleton> không mang `outside`] (design/cvat-api-notes.md, "Shape mắt (2026-11-18)", câu 5), nên đọc nguyên văn thì shape kéo dài tới hết
+    job. Nhận ra các track đó bằng shape trong JSON (cùng phép ghép `cvatsync._shape_tracks` dùng khi đối chiếu sau khi gửi) và đưa chúng về
+    `ann.shapes` ở đúng frame f. Hai shape cùng nhãn cùng frame (hai người): `ann.shapes` chỉ giữ một, như khi đọc bản "CVAT for images"."""
+    from . import cvatsync                               # cvatsync nhập module này: nhập muộn để khỏi vòng
+    index = {n: i for i, n in enumerate(nums)}
+    sent: dict[str, list[cvatxml.EyeShape]] = {l: [] for l in EYES}
+    for name, jf, pts in cvatsync._json_eye_shapes(annotations_json, labels):
+        f = index.get(jf)
+        if f is not None:
+            key = cvatxml.EyeKey(f, {pid: cvatxml.PointState(xy, outside, occ) for pid, (xy, occ, outside) in pts.items()})
+            sent[name].append(cvatxml.EyeShape(name, key))
+    for label, shapes in sent.items():
+        if not shapes:
+            continue
+        drop = cvatsync._shape_tracks(ann.tracks[label], shapes)
+        for t in drop:
+            f = min(t.keys)
+            ann.shapes[label].setdefault(f, t.keys[f])
+        gone = {id(t) for t in drop}
+        ann.tracks[label] = [t for t in ann.tracks[label] if id(t) not in gone]
+
+
 def open_job(client: CvatClient, job_id: int) -> Session:
     """Mở một job của CVAT thành phiên làm việc: nhãn hiện có là nhãn nền (job có nhãn mắt thì phiên ở chế độ QC)."""
     problem = client.eye_labels_ok(job_id)
     if problem:
         raise CvatError(problem + " EyePin chỉ mở job có hai skeleton mắt 'mattrai' và 'matphai' (8 điểm mỗi mắt).")
-    eye_ids = _eye_label_ids(client.labels(job_id))
+    labels = client.labels(job_id)
+    eye_ids = _eye_label_ids(labels)
     source = CvatSource(client, job_id)
     aj = client.annotations(job_id)
     base, display = base_format(aj, eye_ids)
@@ -116,6 +141,8 @@ def open_job(client: CvatClient, job_id: int) -> Session:
         if display != base and json_eyes:       # hai định dạng giữ khác nhau: nền từ `base`, nhãn mắt (keyframe) từ `display`
             shown = cvatxml.parse_bytes(client.export_xml(job_id, display), nums)
             ann.tracks, ann.shapes = shown.tracks, shown.shapes
+        if display == VIDEO and any(_is_eye(o, eye_ids) for o in aj.get("shapes") or []):
+            _shapes_from_video(ann, aj, labels, nums)    # shape mắt trong bản video là track [f, f+1 Outside]: đưa về shape ở frame f
     except ValueError as e:
         raise CvatError(str(e)) from e
     session = Session(source=source, ann=ann)
