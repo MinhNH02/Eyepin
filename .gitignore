@@ -23,3 +23,10 @@ spike/roundtrip/
 # Tài liệu guideline của công ty và sơ đồ archify: giữ ở máy
 guideline/
 .archify/
+
+# Tài liệu: giữ ở máy, không đẩy lên GitHub (người dùng chốt 2026-11-18).
+# CLAUDE.md và TASKS.md vẫn được theo dõi.
+design/
+/HUONG_DAN.md
+/README.md
+/buglist.md
