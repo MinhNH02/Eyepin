@@ -1,0 +1,311 @@
+"""Cửa sổ "Báo cáo issue CVAT": lấy issue của một task từ CVAT và hiện thành bảng (thiết kế: design/2026-11-18-issue-report-design.md mục 6.3).
+
+`ReportMixin` là mixin của `App`. Cửa sổ là một cửa sổ phụ (`App._toplevel`), nên không khoá cửa sổ chính, không cần job nào đang mở và bị
+`App.teardown` đóng khi đăng xuất. Việc lấy dữ liệu chạy trên luồng nền RIÊNG của màn này (mẫu `LoginScreen._bg`), với một client riêng cho mỗi
+lần lấy; nó KHÔNG dùng `App._run_bg` và không đụng `App.busy`, nên không chặn gán nhãn và không đổi dòng trạng thái chính. Luồng nền không chạm
+Tk: kết quả đi qua hàng đợi, luồng chính lấy bằng `root.after`. Mỗi lần lấy có một số thứ tự (`_report_seq`); kết quả của lần lấy cũ, hoặc về
+sau khi màn đã đóng, bị bỏ. Lấy lỗi thì bảng để trống (không ai xuất nhầm dữ liệu cũ).
+
+Mọi thứ hiện trên màn nằm trong `self._report_ui` (dict rỗng khi màn đóng); dữ liệu hiện ra luôn suy từ `ui["report"]`, không từ ô chọn task.
+"""
+from __future__ import annotations
+
+import queue
+import threading
+import tkinter as tk
+import traceback
+from tkinter import ttk
+
+from . import issuereport
+from .cvatapi import CvatError, LoginNeeded
+from .issuereport import Row
+
+REPORT_TITLE = "Báo cáo issue CVAT"
+FILTER_ALL = "Tất cả"                                 # cùng chữ với issuexlsx.ALL
+STATUS_CHOICES = {FILTER_ALL: None, issuereport.STATUS_OPEN: False, issuereport.STATUS_RESOLVED: True}   # ô Trạng thái -> `resolved` của `select`
+NOT_LOGGED_IN = "CVAT báo chưa đăng nhập hoặc phiên đăng nhập đã hết hạn. Hãy đăng nhập lại."
+MESSAGE_CHARS = 120                                   # dòng đầu của mô tả dài hơn ngần này ký tự thì cắt
+POLL_MS = 40
+
+
+def _task_label(task: dict) -> str:
+    return "#%d  %s  (%d frame)" % (task["id"], task["name"], task["size"])
+
+
+def _first_line(message: str) -> str:
+    """Dòng đầu của mô tả để hiện trong bảng; còn dòng sau thì thêm " …". Dữ liệu để xuất vẫn là mô tả nguyên văn."""
+    lines = message.strip().splitlines()
+    first = lines[0] if lines else ""
+    if len(first) > MESSAGE_CHARS:
+        return first[:MESSAGE_CHARS] + "…"
+    return first + " …" if len(lines) > 1 else first
+
+
+def _row_values(r: Row) -> tuple:
+    return (r.job, r.frame, _first_line(r.message), r.status, r.owner, r.created.strftime("%d/%m %H:%M") if r.created else "")
+
+
+def _job_values(job: issuereport.JobInfo, line: issuereport.SummaryLine, ticked: bool, flagged: bool) -> tuple:
+    name = str(job.id)
+    if job.type != issuereport.DEFAULT_JOB_TYPE:
+        name += " (%s)" % job.type
+    if not job.listed:
+        name += " (không xem được)"
+    count = "%d (%d)" % (line.total, line.open) if line.total else "0"
+    return ("☑" if ticked else "☐", name, job.assignee, count + " ⚠" if flagged else count)
+
+
+def _status_text(report: issuereport.Report, shown: list[Row], excluded) -> str:
+    tail = "  ⚠ " + " ".join(report.warnings) if report.warnings else ""
+    if not report.rows:
+        return "Task này chưa có issue nào." + tail
+    text = "Đang hiện %d / %d issue" % (len(shown), len(report.rows))
+    skipped = sum(1 for r in report.rows if r.job in excluded)
+    if skipped:
+        text += " · %d issue ở job không chọn" % skipped
+    return text + " · %d chưa sửa · tài khoản %s · lấy lúc %s" % (
+        sum(1 for r in shown if not r.resolved), report.user, report.fetched.strftime("%H:%M")) + tail
+
+
+def _table(parent, columns, **kw) -> ttk.Treeview:
+    """Bảng có thanh cuộn dọc; mỗi cột là (mã, tiêu đề, rộng, căn lề, co giãn)."""
+    tv = ttk.Treeview(parent, columns=[c[0] for c in columns], show="headings", **kw)
+    for key, title, width, anchor, stretch in columns:
+        tv.heading(key, text=title, anchor=anchor)
+        tv.column(key, width=width, anchor=anchor, stretch=stretch)
+    bar = ttk.Scrollbar(parent, orient="vertical", command=tv.yview)
+    tv.configure(yscrollcommand=bar.set)
+    bar.pack(side="right", fill="y")
+    tv.pack(side="left", fill="both", expand=True)
+    return tv
+
+
+def _refill(tv: ttk.Treeview, items) -> None:
+    """Thay mọi dòng của bảng bằng `items` (mỗi phần tử là (mã dòng, giá trị)), giữ chỗ đã cuộn tới."""
+    top = tv.yview()[0]
+    tv.delete(*tv.get_children())
+    for iid, values in items:
+        tv.insert("", "end", iid=iid, values=values)
+    tv.yview_moveto(top)
+
+
+class ReportMixin:
+    # ---------- khởi dựng và dựng cửa sổ ----------
+    def _init_report(self) -> None:
+        self._report_ui: dict = {}                    # rỗng khi màn đóng
+        self._report_seq = 0                          # số thứ tự lần lấy; chỉ tăng, không bao giờ đặt lại
+
+    def show_issue_report(self, task_id: int | None = None) -> None:
+        """Mở cửa sổ (đã mở thì đưa lên trước, không đổi gì) và lấy issue của `task_id`; None thì chỉ lấy danh sách task."""
+        d, new = self._toplevel("issue_report", REPORT_TITLE)
+        if not new:
+            return
+        self._report_build(d)
+        self._report_ui["task_id"] = task_id
+        self._report_fetch()
+
+    def _report_build(self, d: tk.Toplevel) -> None:
+        d.geometry("1120x560")
+        d.minsize(780, 340)
+        ui = {"tasks": [], "task_id": None, "report": None, "excluded": set(), "loading": False,
+              "status_filter": tk.StringVar(d, FILTER_ALL), "owner_filter": tk.StringVar(d, FILTER_ALL), "status": tk.StringVar(d)}
+        bar = ttk.Frame(d)
+        bar.pack(fill="x", padx=10, pady=(10, 6))
+        ttk.Label(bar, text="Task:").pack(side="left")
+        ui["task_cb"] = ttk.Combobox(bar, state="readonly", width=40)
+        ui["task_cb"].pack(side="left", padx=(6, 14))
+        ui["task_cb"].bind("<<ComboboxSelected>>", lambda e: self.report_pick_task())
+        ttk.Label(bar, text="Trạng thái:").pack(side="left")
+        status_cb = ttk.Combobox(bar, textvariable=ui["status_filter"], values=list(STATUS_CHOICES), state="readonly", width=10)
+        status_cb.pack(side="left", padx=(6, 14))
+        ttk.Label(bar, text="Người báo:").pack(side="left")
+        ui["owner_cb"] = ttk.Combobox(bar, textvariable=ui["owner_filter"], values=[FILTER_ALL], state="readonly", width=16)
+        ui["owner_cb"].pack(side="left", padx=(6, 0))
+        for cb in (status_cb, ui["owner_cb"]):
+            cb.bind("<<ComboboxSelected>>", lambda e: self._report_fill())
+        ui["export_btn"] = ttk.Button(bar, text="Xuất Excel…")             # lệnh của nút nối ở phần xuất file
+        ui["export_btn"].pack(side="right")
+        ui["refresh_btn"] = ttk.Button(bar, text="Làm mới", command=self.report_refresh)
+        ui["refresh_btn"].pack(side="right", padx=(0, 8))
+
+        line = ttk.Label(d, textvariable=ui["status"], anchor="w", justify="left")
+        line.pack(side="bottom", fill="x", padx=10, pady=(6, 8))
+        line.bind("<Configure>", lambda e: line.configure(wraplength=max(200, e.width - 4)))
+        panes = ttk.Panedwindow(d, orient="horizontal")
+        panes.pack(fill="both", expand=True, padx=10)
+        left, right = ttk.Frame(panes), ttk.Frame(panes)
+        panes.add(left, weight=1)
+        panes.add(right, weight=4)
+        ui["jobs_tv"] = _table(left, (("tick", "Chọn", 46, "center", False), ("job", "Job", 140, "w", True),
+                                      ("assignee", "Được giao", 90, "w", True), ("issues", "Issue", 70, "e", False)), selectmode="none")
+        ui["jobs_tv"].bind("<Button-1>", self._report_click_job)
+        ui["rows_tv"] = _table(right, (("job", "Job", 60, "center", False), ("frame", "Frame", 60, "center", False),
+                                       ("message", "Mô tả lỗi", 260, "w", True), ("status", "Trạng thái", 80, "w", False),
+                                       ("owner", "Người báo", 100, "w", False), ("created", "Ngày báo", 100, "w", False)), selectmode="browse")
+        self._report_ui = ui
+        self._report_controls()
+        d.bind("<Destroy>", lambda e: self._report_closed() if e.widget is d else None)
+
+    def _report_closed(self) -> None:
+        self._report_ui = {}
+
+    def _report_alive(self) -> bool:
+        d = self._dialogs.get("issue_report")
+        try:
+            return bool(self._report_ui) and d is not None and bool(d.winfo_exists())
+        except tk.TclError:
+            return False
+
+    # ---------- lấy dữ liệu (luồng nền riêng) ----------
+    def _report_fetch(self) -> None:
+        """Mọi đường lấy (mở màn, Làm mới, đổi task) đi qua đây. Lỗi nào cũng về `_report_done`, không để ném ra Tk."""
+        ui = self._report_ui
+        self._report_seq += 1
+        seq, task_id, cl = self._report_seq, ui["task_id"], self.cvat_client
+        if cl is None or cl.token is None:
+            self._report_done(seq, None, LoginNeeded(NOT_LOGGED_IN, 401))
+            return
+        c = None
+        try:
+            c = self.new_client(cl.url)                   # client riêng cho mỗi lần lấy: không dùng chung kết nối với luồng chính đang đọc ảnh
+            c.use_token(cl.token)
+        except Exception as err:
+            if c is not None:
+                c.close()
+            self._report_done(seq, None, err)
+            return
+        out: queue.Queue = queue.Queue(maxsize=1)
+
+        def work():
+            try:
+                res = (issuereport.load(c, task_id), None)
+            except Exception as err:                      # mọi lỗi đều phải về `_report_done`, không thì các nút bị khoá mãi
+                res = (None, err)
+            finally:
+                c.close()
+            out.put(res)
+
+        def poll():
+            if not self._report_alive() or seq != self._report_seq:
+                return                                    # màn đã đóng hoặc đã có lần lấy mới hơn: bỏ kết quả, không hẹn lại
+            try:
+                res, err = out.get_nowait()
+            except queue.Empty:
+                self.root.after(POLL_MS, poll)
+                return
+            self._report_done(seq, res, err)
+
+        try:
+            threading.Thread(target=work, daemon=True).start()
+        except Exception as err:
+            c.close()
+            self._report_done(seq, None, err)
+            return
+        self.root.after(POLL_MS, poll)
+        ui["loading"] = True
+        ui["status"].set("Đang lấy issue của task #%d…" % task_id if task_id is not None else "Đang lấy danh sách task…")
+        self._report_controls()
+
+    def _report_done(self, seq: int, result, err) -> None:
+        """Kết quả một lần lấy, ở luồng chính. Lần lấy cũ hoặc màn đã đóng thì bỏ."""
+        if not self._report_alive() or seq != self._report_seq:
+            return
+        ui = self._report_ui
+        ui["loading"] = False
+        if err is not None:
+            ui["report"] = None
+            if isinstance(err, CvatError):
+                ui["status"].set(str(err))
+            else:
+                traceback.print_exception(type(err), err, err.__traceback__)
+                ui["status"].set("Lỗi không mong đợi: %s: %s" % (type(err).__name__, err))
+        else:
+            tasks, report = result
+            ui["tasks"], ui["report"] = tasks, report
+            ui["task_cb"]["values"] = [_task_label(t) for t in tasks]
+            ids = [t["id"] for t in tasks]
+            if ui["task_id"] in ids:
+                ui["task_cb"].current(ids.index(ui["task_id"]))
+            else:
+                ui["task_cb"].set("")
+            ui["excluded"] = ui["excluded"] & {j.id for j in report.jobs} if report is not None else set()
+            names = [FILTER_ALL] + (issuereport.owners(report) if report is not None else [])
+            ui["owner_cb"]["values"] = names
+            if ui["owner_filter"].get() not in names:
+                ui["owner_filter"].set(FILTER_ALL)
+            if report is None:
+                ui["status"].set("Không còn thấy task #%d trên CVAT." % ui["task_id"] if ui["task_id"] is not None else "Chọn một task để xem issue.")
+        self._report_fill()
+
+    # ---------- thao tác của người dùng ----------
+    def report_pick_task(self) -> None:
+        """Ô chọn task đổi: task khác thì xoá bảng ngay rồi lấy task mới; vẫn task đó thì như Làm mới (giữ job đã bỏ tick)."""
+        ui = self._report_ui
+        if not ui:
+            return
+        i, tasks = ui["task_cb"].current(), ui["tasks"]
+        if not 0 <= i < len(tasks):
+            return
+        if tasks[i]["id"] == ui["task_id"]:
+            self.report_refresh()
+            return
+        ui["task_id"], ui["report"], ui["excluded"] = tasks[i]["id"], None, set()
+        self._report_fill()
+        self._report_fetch()
+
+    def report_refresh(self) -> None:
+        if self._report_alive():
+            self._report_fetch()
+
+    def report_toggle_job(self, job_id: int) -> None:
+        ui = self._report_ui
+        if not ui or ui["report"] is None or job_id not in {j.id for j in ui["report"].jobs}:
+            return
+        ui["excluded"] ^= {job_id}
+        self._report_fill()
+
+    def _report_click_job(self, event) -> str:
+        iid = self._report_ui["jobs_tv"].identify_row(event.y)
+        if iid:
+            self.report_toggle_job(int(iid))
+        return "break"
+
+    # ---------- hiện dữ liệu ----------
+    def _report_owner(self) -> str | None:
+        name = self._report_ui["owner_filter"].get()
+        return None if name == FILTER_ALL else name
+
+    def report_rows(self) -> list[Row]:
+        """Các dòng bảng đang hiện, đúng thứ tự; rỗng khi màn đóng hoặc chưa có dữ liệu."""
+        ui = self._report_ui
+        if not ui or ui["report"] is None:
+            return []
+        return issuereport.select(ui["report"], ui["excluded"], STATUS_CHOICES.get(ui["status_filter"].get()), self._report_owner())
+
+    def _report_fill(self) -> None:
+        """Vẽ lại danh sách job, bảng issue, dòng trạng thái và trạng thái nút. Chưa có dữ liệu (đổi task, lấy lỗi) thì chỉ xoá hai bảng: dòng
+        trạng thái giữ nguyên để lời báo lỗi không mất khi đổi bộ lọc; đang lấy thì cũng giữ dòng "Đang lấy…"."""
+        ui = self._report_ui
+        if not ui:
+            return
+        report, rows = ui["report"], self.report_rows()
+        if report is None:
+            _refill(ui["jobs_tv"], ())
+            _refill(ui["rows_tv"], ())
+        else:
+            excluded = ui["excluded"]
+            lines = issuereport.summary(report, excluded, self._report_owner())
+            _refill(ui["jobs_tv"], ((str(j.id), _job_values(j, line, j.id not in excluded, j.id in report.flagged))
+                                    for j, line in zip(report.jobs, lines)))
+            _refill(ui["rows_tv"], ((str(r.issue_id), _row_values(r)) for r in rows))
+            if not ui["loading"]:
+                ui["status"].set(_status_text(report, rows, excluded))
+        self._report_controls()
+
+    def _report_controls(self) -> None:
+        """Ô chọn task và nút Làm mới tắt khi đang lấy; nút Xuất chỉ bật khi không lấy và bảng có dòng."""
+        ui = self._report_ui
+        loading = ui["loading"]
+        for w in (ui["task_cb"], ui["refresh_btn"]):
+            w.state(["disabled" if loading else "!disabled"])
+        ui["export_btn"].state(["disabled" if loading or not self.report_rows() else "!disabled"])

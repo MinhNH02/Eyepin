@@ -39,6 +39,7 @@ from .gui_cvat import CvatMixin, edit_command, net_safe
 from .gui_frames import FramesMixin
 from .gui_login import FrontDoor, LoginMixin
 from .gui_objects import LayerSet, ObjectSet, ObjectsMixin
+from .gui_report import ReportMixin
 from .gui_sidebar import ObjectList
 from .icons import BAR_SIZE, IconButton, Tooltip
 from .session import QC_MSG, Session
@@ -129,7 +130,7 @@ DRAG_MIN_PX = 3                                  # kéo điểm / cả mắt: ch
 MOUSE_SPEED_MIN, MOUSE_SPEED_MAX = 0.1, 3.0       # độ nhạy chuột khi kéo: 1 = như cũ, nhỏ hơn = chậm hơn
 
 
-class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
+class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
     @staticmethod
     def _set_window_icon(root: tk.Tk) -> None:
         """Icon cửa sổ và thanh tác vụ là ảnh eyepin.png. Thiếu file hoặc lỗi thì bỏ qua, tool vẫn mở bình thường."""
@@ -195,6 +196,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         self._auto_view = None               # khung tự động đã canh cho frame hiện tại (giữ nguyên khi sửa nhãn, như CVAT)
         self._auto_key = None
         self._init_cvat()
+        self._init_report()
         self._build()
         self.sync_look_vars()
         self._bind_keys()
