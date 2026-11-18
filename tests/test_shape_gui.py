@@ -101,6 +101,37 @@ class ShapeGuiTests(unittest.TestCase):
             self.assertNotEqual(app.notice, "")
             self.assertEqual(self.snap(app.s), before)
 
+    def test_flag_on_frame_without_shape_says_no_label(self):
+        """Mắt shape đang chọn nhưng frame này không có shape của nó: cờ cả mắt và cờ một điểm không đổi gì, và thông báo nói đúng điều đó."""
+        app = self.make_app()
+        self.draw(app, 3)
+        app.go(6)                                                  # frame không có shape của mattrai
+        app.select_eye("mattrai", quiet=True)
+        before = self.snap(app.s)
+        app.notice = ""
+        app.toggle_flag("occluded")                                # cả mắt
+        self.assertIn("chưa có nhãn của mattrai", app.notice)
+        self.assertNotIn("bỏ", app.notice)
+        self.assertEqual(self.snap(app.s), before)
+        app.tree.selection_set("pt:14")                            # một điểm (dòng điểm 14 trong DETAILS)
+        self.assertEqual(app._selected(), ("mattrai", 14))
+        app.notice = ""
+        app.toggle_flag("occluded")
+        self.assertIn("chưa có nhãn của mattrai", app.notice)
+        self.assertNotIn("bỏ", app.notice)
+        self.assertEqual(self.snap(app.s), before)
+
+    def test_delete_on_frame_without_shape_shows_message(self):
+        app = self.make_app()
+        self.draw(app, 3)
+        app.go(6)
+        app.select_eye("mattrai", quiet=True)
+        before = self.snap(app.s)
+        app.notice = ""
+        app.delete_label()
+        self.assertIn("không có shape", app.notice)
+        self.assertEqual(self.snap(app.s), before)
+
     def test_paste_shape_to_another_frame(self):
         app = self.make_app()
         self.draw(app, 3)

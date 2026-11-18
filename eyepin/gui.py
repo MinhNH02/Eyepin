@@ -2214,7 +2214,11 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
             self.refresh()
             return
         if self.s.eye_kind(target) == "shape":
-            self.notice = f"{what}: " + (name if new else f"bỏ {name}")
+            # shape không có keyframe: có nhãn ở frame này hay không là `has_shape`; không có thì session không đổi gì
+            if not self.s.has_shape(target, self.f):
+                self.notice = f"Frame này chưa có nhãn của {target}; hãy vẽ hoặc ghim mắt đó trước."
+            else:
+                self.notice = f"{what}: " + (name if new else f"bỏ {name}")
         elif not was_key and self.f not in self.s.eye_keyframes(target):
             self.notice = f"Frame này chưa có nhãn của {target}; hãy vẽ hoặc ghim mắt đó trước."
         else:
