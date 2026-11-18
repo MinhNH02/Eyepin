@@ -1005,10 +1005,21 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
                 self.notice = f"Đã chọn {label}."
                 self.refresh(light=True)
 
+    def _lockable(self) -> list[tuple[int, str]]:
+        """Các mắt mà khoá tất cả tác động: mọi mắt đang có thẻ trong panel, cộng mắt shape còn nhãn ở frame khác (mắt shape chỉ có thẻ ở frame
+        có shape của nó; khoá đi theo mắt nên vẫn phải tính, M1)."""
+        rows = list(self._object_rows())
+        for i, L in enumerate(self.s.layers):
+            for l, sp in EYES.items():
+                if (i, l) not in rows and L.kind[l] == "shape" and any(all(p in pts for p in sp.ids) for pts in L.pins.values()):
+                    rows.append((i, l))
+        return rows
+
     def _all_locked(self) -> bool:
-        """Mọi đối tượng đang có thẻ trong panel (mọi mắt của mọi người) đều khoá (nút khoá tất cả ở đầu danh sách đặc khi đúng, như CVAT).
-        Mắt đã xoá của người thứ 2 trở đi không còn thẻ nên không tính (B10)."""
-        return bool(self.s) and all(self.locked.has(i, l) for i, l in self._object_rows())
+        """Mọi mắt khoá tất cả tác động (`_lockable`: mọi mắt của mọi người) đều khoá (nút khoá tất cả ở đầu danh sách đặc khi đúng, như CVAT).
+        Mắt đã xoá của người thứ 2 trở đi không còn thẻ nên không tính (B10). Không có mắt nào thì KHÔNG phải "khoá hết"."""
+        rows = self._lockable() if self.s else []
+        return bool(rows) and all(self.locked.has(i, l) for i, l in rows)
 
     def toggle_lock_all(self):
         """Phím L, nút khoá tất cả ở đầu danh sách, Run actions "lock_all": như CVAT, khoá MỌI đối tượng đang có (mọi mắt của mọi người,
@@ -1017,7 +1028,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         n = self._n_layers()
         on = not self._all_locked()
         if on:
-            for i, l in (self._object_rows() if self.s else [(0, l) for l in EYES]):
+            for i, l in (self._lockable() if self.s else [(0, l) for l in EYES]):
                 self.locked.put(i, l, True)
         else:
             for l in EYES:

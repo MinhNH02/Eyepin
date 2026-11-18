@@ -372,6 +372,35 @@ class ShapeGuiTests(unittest.TestCase):
         self.assertEqual(sorted(app.s.pins), [0])
         self.assertEqual(app.notice, "Đã xoá 2 keyframe sau frame 4.")
 
+    def test_lock_all_on_frame_without_cards_locks(self):
+        """M1: người chỉ có shape (hai mắt) và frame đang xem không có shape nào (không có thẻ): L khoá mọi mắt, không "mở khoá"."""
+        app = self.make_app()
+        self.draw(app, 3)
+        self.draw(app, 3, label="matphai")
+        app.go(6)
+        self.assertEqual(app._object_rows(), [])
+        self.assertFalse(app._all_locked())
+        app.toggle_lock_all()
+        self.assertIn("Đã khoá", app.notice)
+        self.assertTrue(app.locked.has(0, "mattrai") and app.locked.has(0, "matphai"))
+        self.assertTrue(app._all_locked())
+        app.toggle_lock_all()
+        self.assertIn("mở khoá", app.notice)
+        self.assertFalse(app.locked.has(0, "mattrai") or app.locked.has(0, "matphai"))
+
+    def test_lock_all_counts_shape_eyes_off_this_frame(self):
+        """M1: mắt track (có thẻ) đã khoá nhưng mắt shape ở frame khác chưa khoá: chưa phải "khoá hết", L khoá nốt."""
+        app = self.make_app()
+        self.draw(app, 0, label="matphai", kind="track")
+        self.draw(app, 3)
+        app.go(6)
+        app.select_eye("matphai", quiet=True)
+        app.toggle_lock()
+        self.assertTrue(app.locked.has(0, "matphai"))
+        self.assertFalse(app._all_locked())
+        app.toggle_lock_all()
+        self.assertTrue(app.locked.has(0, "mattrai"))
+
     # ---------- I3: câu báo gửi / xuất có đếm shape ----------
     def sent_notice(self, keyframes, shapes):
         """Câu báo của `_do_send` khi gửi xong và khớp (việc nền giả chạy ngay, không chạm mạng)."""
