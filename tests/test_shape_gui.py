@@ -344,6 +344,34 @@ class ShapeGuiTests(unittest.TestCase):
         app.object_propagate(count=2)
         self.assertEqual(app.notice, "Đã nhân nhãn sang 2 frame (các frame sau); mỗi frame thành frame ghim.")
 
+    def test_clear_after_keeps_shapes(self):
+        """I2: "Xoá mọi keyframe sau frame này" ở người có cả track lẫn shape: chỉ bỏ keyframe của mắt track; shape còn nguyên, câu báo nói đúng."""
+        app = self.make_app()
+        self.draw(app, 0, label="matphai", kind="track")
+        self.draw(app, 6, label="matphai", kind="track")
+        self.draw(app, 5)
+        self.draw(app, 8)
+        ids = dict(app.s.shape_ids["mattrai"])
+        app.go(4)
+        undo = len(app.s._undo)
+        app.run_action("clear_after")
+        self.assertEqual(app.s.eye_keyframes("matphai"), [0])
+        self.assertEqual(app.s.shape_ids["mattrai"], ids)
+        self.assertTrue(app.s.has_shape("mattrai", 5) and app.s.has_shape("mattrai", 8))
+        self.assertEqual(app.notice, "Đã xoá 1 keyframe sau frame 4; giữ nguyên 2 shape.")
+        self.assertEqual(len(app.s._undo), undo + 1)
+        app.undo()
+        self.assertEqual(app.s.eye_keyframes("matphai"), [0, 6])
+
+    def test_clear_after_track_only_unchanged(self):
+        app = self.make_app()
+        for f in (0, 6, 9):
+            self.draw(app, f, kind="track")
+        app.go(4)
+        app.run_action("clear_after")
+        self.assertEqual(sorted(app.s.pins), [0])
+        self.assertEqual(app.notice, "Đã xoá 2 keyframe sau frame 4.")
+
     def test_track_drawing_unchanged(self):
         app = self.make_app()
         self.draw(app, 3, kind="track")

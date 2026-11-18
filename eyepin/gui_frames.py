@@ -140,15 +140,8 @@ class FramesMixin:
                 self.select_eye(next(iter(EYES)), quiet=True)           # Propagate cần một mắt đang chọn: lấy mắt đầu
             self.object_propagate()
         elif name == "clear_after":
-            later = [g for g in self.s.pins if g > self.f]
-            if later:
-                self.s._push_undo()
-                for g in later:
-                    self.s.pins.pop(g, None)
-                    self.s.flags.pop(g, None)
-                    self.s.estimates.pop(g, None)
-                self.s.recompute()
-            self.notice = f"Đã xoá {len(later)} keyframe sau frame {self.f}."
+            n, kept = self.s.clear_keyframes_after(self.f)               # shape không phải keyframe: giữ nguyên
+            self.notice = f"Đã xoá {n} keyframe sau frame {self.f}" + (f"; giữ nguyên {kept} shape." if kept else ".")
             self.refresh()
         elif name == "swap":
             self.swap_labels()

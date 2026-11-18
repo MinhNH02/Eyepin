@@ -695,6 +695,32 @@ class Session:
         self.recompute()
         return label
 
+    def clear_keyframes_after(self, frame: int) -> tuple[int, int]:
+        """Lệnh "Xoá mọi keyframe sau frame này" (người đang chọn): bỏ keyframe của các mắt TRACK ở mọi frame sau `frame` (điểm, cờ, ước lượng
+        của mắt đó); shape không phải keyframe nên giữ nguyên. Một bước hoàn tác (không có gì để bỏ thì không thêm bước).
+        Trả (số frame đã bỏ keyframe, số shape giữ lại sau `frame`)."""
+        self._guard_qc()
+        ids = {i for l, sp in EYES.items() if self.kind[l] == "track" for i in sp.ids}
+        later = [g for g in sorted(self.pins) if g > frame]
+        hit = [g for g in later if ids & set(self.pins[g])]
+        kept = sum(1 for g in later for l in EYES if self.has_shape(l, g))
+        if not hit:
+            return 0, kept
+        self._push_undo()
+        for g in hit:
+            self.pins[g] = {i: p for i, p in self.pins[g].items() if i not in ids}
+            for store in (self.flags, self.estimates):
+                if g in store:
+                    store[g] = {i: v for i, v in store[g].items() if i not in ids}
+                    if not store[g]:
+                        del store[g]
+            if not self.pins[g]:
+                del self.pins[g]
+                self.flags.pop(g, None)
+                self.estimates.pop(g, None)
+        self.recompute()
+        return len(hit), kept
+
     def pin_count(self) -> int:
         """Tổng số frame ghim của MỌI người trong job (phạm vi của clear_all), không chỉ người đang chọn."""
         return sum(len(L.pins) for L in self.layers)
