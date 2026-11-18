@@ -25,6 +25,33 @@ EAR_WIDE = 0.50    # trên mức này mắt mở rộng bất thường: hai mí
 EAR_JUMP = 0.15    # độ mở đổi quá mức này giữa hai frame liền kề (chớp mắt thật cũng có thể gây ra)
 
 
+# Mô tả ngắn (một dòng trong tab Issues) và gợi ý xử lý (hiện khi bấm vào vấn đề) theo mã vấn đề.
+SHORT = {
+    "corner_order": "Khoé mắt sai vị trí",
+    "lid_order": "Mí trên nằm dưới mí dưới",
+    "crossing": "Đường viền bắt chéo",
+    "out_of_frame": "Điểm nằm ngoài khung hình",
+    "partial_keyframe": "Keyframe thiếu điểm",
+    "ear_closed": "Mắt gần nhắm",
+    "ear_wide": "Mắt mở rộng bất thường",
+    "ear_jump": "Độ mở mắt đổi đột ngột",
+    "jump": "Điểm nhảy xa so với frame trước",
+    "still": "Nhãn đứng yên quá lâu",
+}
+HINT = {
+    "corner_order": "Kéo hai khoé về đúng vị trí: khoé đầu phải là điểm trái nhất, khoé cuối là điểm phải nhất.",
+    "lid_order": "Mí trên và mí dưới đang bị đảo: kiểm tra từng cặp điểm mí và đặt lại cho mí trên nằm phía trên.",
+    "crossing": "Hai cạnh của đường viền cắt nhau: kéo các điểm liên quan để đường viền không tự cắt.",
+    "out_of_frame": "Đánh dấu điểm đó là Outside, hoặc kéo nó vào trong khung hình nếu mắt vẫn thấy được.",
+    "partial_keyframe": "Keyframe này mới ghim một phần số điểm: ghim đủ 8 điểm (tool luôn ghi keyframe đủ 8 điểm khi xuất).",
+    "ear_closed": "Mắt gần khép: kiểm tra hai mí có bám đúng mí đã khép không. Nếu đúng là chớp mắt thì bỏ qua.",
+    "ear_wide": "Mắt mở rộng hơn mức thường gặp: kiểm tra mí trên/mí dưới có đặt quá xa nhau không.",
+    "ear_jump": "Độ mở thay đổi nhanh giữa hai frame liền kề: có thể là chớp mắt thật, cũng có thể là nhãn sai ở một trong hai frame.",
+    "jump": "Điểm di chuyển nhiều so với frame trước: xem lại frame này và frame kề trước, có điểm nào bị kéo nhầm không.",
+    "still": "Nhãn không dịch chuyển suốt một đoạn: kiểm tra mắt thật có đứng yên không, hay nhãn chưa được cập nhật.",
+}
+
+
 @dataclass
 class Finding:
     level: str                 # "red" | "yellow"

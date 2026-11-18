@@ -14,6 +14,7 @@ from .geometry import EYES
 from .gui_cvat import edit_command
 from .icons import IconButton
 from .render import INSTANCE_COLORS
+from .scan import HINT, SHORT
 
 def _pair_key(i: int, x):
     return (i, x)
@@ -553,36 +554,105 @@ class ObjectsMixin:
     def _turn_text(self, i: int, k: int, t) -> str:
         return (f"Người {i + 1}: " if len(self.s.layers) > 1 else "") + t.message(k)
 
+    # Ba mức: (tên, màu chấm). Đỏ/vàng cùng tông với dải thời gian (#DC3C3C, #F0AA28); xanh lá là thông tin, không phải lỗi nhãn.
+    ISSUE_LEVELS = {"red": ("Đỏ", "#DC3C3C"), "yellow": ("Vàng", "#F0AA28"), "green": ("Xanh lá", "#3FA535")}
+    ISSUE_EMPTY = "Không có frame nào cần chú ý."
+
+    @staticmethod
+    def _span(first: int, last: int) -> str:
+        return f"{first}" if first == last else f"{first}–{last}"
+
+    def _build_issue_table(self, parent):
+        """Bảng vấn đề có cột riêng: chấm màu mức (đỏ/vàng/xanh lá, đứng trước số thứ tự) | # | Frame | Vấn đề. Chỉ chấm là màu, cả dòng nền trắng
+        (dòng chọn thì cam); tên mức bằng chữ nằm ở dòng đầu khung chi tiết."""
+        wrap = ttk.Frame(parent)
+        wrap.pack(fill="both", expand=True)
+        t = self.issue_table = ttk.Treeview(wrap, columns=("n", "frame", "desc"), show="tree headings", selectmode="browse", height=14)
+        # Kéo mép tiêu đề để đổi độ rộng cột: minwidth nhỏ thì thu hẹp được; rộng hơn panel thì cuộn ngang. Tổng mặc định vừa panel (~380 px).
+        for col, text, w, stretch in (("#0", "", 28, False), ("n", "#", 48, False), ("frame", "Frame", 70, False),
+                                      ("desc", "Vấn đề", 200, True)):
+            t.heading(col, text=text, anchor="w")
+            t.column(col, width=w, minwidth=24, stretch=stretch, anchor="w")
+        ybar = ttk.Scrollbar(wrap, orient="vertical", command=t.yview)
+        self.issue_xbar = xbar = ttk.Scrollbar(wrap, orient="horizontal", command=t.xview)
+        t.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
+        wrap.rowconfigure(0, weight=1)
+        wrap.columnconfigure(0, weight=1)
+        t.grid(row=0, column=0, sticky="nsew")
+        ybar.grid(row=0, column=1, sticky="ns")
+        xbar.grid(row=1, column=0, sticky="ew")
+        self._issue_dots = {}                                    # PhotoImage phải được giữ, không thì Tk xoá hình
+        for level, (_, color) in self.ISSUE_LEVELS.items():
+            img = tk.PhotoImage(width=12, height=12)
+            for y in range(12):
+                for x in range(12):
+                    if (x - 5.5) ** 2 + (y - 5.5) ** 2 <= 5.2 ** 2:
+                        img.put(color, (x, y))
+            self._issue_dots[level] = img
+        t.bind("<Double-Button-1>", self.on_list)
+        t.bind("<<TreeviewSelect>>", self.on_issue_select)
+
+    def _issue_selected(self) -> int | None:
+        """Chỉ số (từ 0) của dòng đang chọn trong bảng vấn đề; None nếu chưa chọn hoặc bảng chỉ có dòng "không có vấn đề"."""
+        sel = self.issue_table.selection()
+        if not sel or not sel[0].isdigit():
+            return None
+        return int(sel[0])
+
+    def _turn_entry(self, i: int, k: int, t) -> tuple[str, str, str]:
+        """(mô tả ngắn, mức, chi tiết) của một đoạn quay đầu. Mức xanh lá: tool tự phát hiện từ điểm ghim, không phải lỗi của nhãn."""
+        who = f"Người {i + 1}: " if len(self.s.layers) > 1 else ""
+        short = who + "Quay đầu" + (f" {t.level}, co {t.shrink * 100:.0f}%" if t.shrink is not None else ", mất một mắt")
+        lines = [who + f"Quay đầu · {self._span(t.first, t.last)} ({t.last - t.first + 1} frame)",
+                 f"Mức co: {t.shrink * 100:.0f}% ({t.level})" if t.shrink is not None else "Một mắt biến mất trong đoạn này."]
+        if t.far_eye:
+            lines.append(f"Mắt xa camera: {t.far_eye}")
+        lines.append(f"Xác nhận tại {t.confirmed} frame ghim." if t.confirmed else "Chưa xác nhận bằng frame ghim (có thể là đầu tiến/lùi chứ không quay).")
+        for n, what in ((t.unsure, "frame không chắc"), (t.one_eye, "frame chỉ còn một mắt"), (t.need_pin, "frame cần ghim")):
+            if n:
+                lines.append(f"{n} {what}.")
+        lines.append("Cách xử lý: nội suy đường thẳng của CVAT dễ lệch trong đoạn này, nên ghim thêm hoặc chỉnh tay ở các frame cần ghim.")
+        return short, "green", "\n".join(lines)
+
+    def _finding_entry(self, fd) -> tuple[str, str, str]:
+        """(mô tả ngắn, mức, chi tiết) của một vấn đề do Quét tìm thấy."""
+        short = SHORT.get(fd.code) or fd.message[:40]
+        n_frames = fd.last - fd.frame + 1
+        lines = [f"Frame {self._span(fd.frame, fd.last)}" + (f" ({n_frames} frame)" if n_frames > 1 else "") + f" · mắt {fd.label}",
+                 f"Vấn đề: {fd.message}"]
+        if fd.points:
+            lines.append("Điểm liên quan: " + ", ".join(map(str, fd.points)))
+        if HINT.get(fd.code):
+            lines.append("Cách xử lý: " + HINT[fd.code])
+        return short, fd.level, "\n".join(lines)
+
     def _fill_issues(self):
-        """Danh sách vấn đề: đoạn quay đầu (do tool tính từ điểm ghim) đứng trước, rồi các vấn đề do Quét tìm trong file nhãn."""
+        """Danh sách vấn đề: đoạn quay đầu (do tool tính từ điểm ghim) đứng trước, rồi các vấn đề do Quét tìm trong file nhãn.
+        Mỗi dòng có cột riêng: chấm màu, #, Frame, mô tả ngắn, Mức; bấm vào dòng thì khung dưới hiện chi tiết."""
         found = self.s.findings if self.s else []
         rows = self._turn_rows()
         self.items = [t.first for _, _, t in rows] + [fd.frame for fd in found]
         self.issue_info = []                                  # chi tiết của từng dòng, hiện khi chọn dòng
-        self.listbox.delete(0, "end")
-        # mỗi dòng chỉ có số thứ tự (#id) và màu: đỏ #DC3C3C, vàng #F0AA28 như dải thời gian, nhạt để chữ đọc được; đoạn quay đầu màu cam nhạt
-        for n, (i, k, t) in enumerate(rows, 1):
-            self.listbox.insert("end", f"#{n}")
-            self.listbox.itemconfig(n - 1, background="#FFD3B3")
-            self.issue_info.append(f"Đoạn quay đầu #{n}\n{self._turn_text(i, k, t)}")
-        for n, fd in enumerate(found, len(rows) + 1):
-            rng = f"{fd.frame}" if fd.frame == fd.last else f"{fd.frame}-{fd.last}"
-            red = fd.level == "red"
-            self.listbox.insert("end", f"#{n}")
-            self.listbox.itemconfig(n - 1, background="#F8D0CC" if red else "#FDEBB8")
-            self.issue_info.append(f"Vấn đề #{n} · mức {'đỏ' if red else 'vàng'}\nFrame {rng} · {fd.label}\n{fd.message}")
-        if not found and not rows:
-            self.listbox.insert("end", "Không có frame nào cần chú ý.")
+        tab = self.issue_table
+        tab.delete(*tab.get_children())
+        entries = [(t.first, t.last, *self._turn_entry(i, k, t)) for i, k, t in rows]
+        entries += [(fd.frame, fd.last, *self._finding_entry(fd)) for fd in found]
+        for n, (first, last, short, level, detail) in enumerate(entries, 1):
+            name = self.ISSUE_LEVELS[level][0]
+            tab.insert("", "end", iid=str(n - 1), image=self._issue_dots[level], values=(f"#{n}", self._span(first, last), short))
+            self.issue_info.append(f"#{n} · Mức: {name}\n{detail}")
+        if not entries:
+            tab.insert("", "end", iid="empty", values=("", "", self.ISSUE_EMPTY))
             self.issue_info.append("")
         self.issue_detail.config(text="Bấm một dòng để xem chi tiết; bấm đúp để nhảy tới frame.")
-        self.issues_var.set(f"Items: {len(found) + len(rows)}")
+        self.issues_var.set(f"Items: {len(entries)}")
         self._turns_sig = self._turns_signature()
 
     def on_issue_select(self, _):
         """Bấm một dòng trong Issues: hiện chi tiết ở bảng bên dưới danh sách (không nhảy frame; đúp mới nhảy)."""
-        sel = self.listbox.curselection()
-        if sel and 0 <= sel[0] < len(self.issue_info):
-            self.issue_detail.config(text=self.issue_info[sel[0]])
+        i = self._issue_selected()
+        if i is not None and i < len(self.issue_info):
+            self.issue_detail.config(text=self.issue_info[i])
 
     def issue_step(self, step: int):
         """Nhảy tới vấn đề kế (step > 0) hoặc trước (step < 0) so với frame đang xem; tính cả đoạn quay đầu."""
@@ -605,17 +675,17 @@ class ObjectsMixin:
         self.refresh()
 
     def issue_resolve(self):
-        sel = self.listbox.curselection()
+        sel = self._issue_selected()
         n_turns = len(self._turn_rows())
-        if self.s and sel and sel[0] < n_turns:
+        if self.s and sel is not None and sel < n_turns:
             self.notice = "Đoạn quay đầu không bỏ được: nó được tính lại từ điểm ghim."
             self.refresh()
             return
-        if not (self.s and sel and sel[0] - n_turns < len(self.s.findings)):
+        if not (self.s and sel is not None and sel - n_turns < len(self.s.findings)):
             self.notice = "Chọn một vấn đề trong danh sách trước."
             self.refresh()
             return
-        fd = self.s.findings.pop(sel[0] - n_turns)
+        fd = self.s.findings.pop(sel - n_turns)
         self._fill_issues()
         self.notice = f"Đã xử lý: {fd.label} frame {fd.frame}."
         self.refresh()

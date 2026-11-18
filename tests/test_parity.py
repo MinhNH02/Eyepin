@@ -236,7 +236,7 @@ class ParityTests(unittest.TestCase):
         off = render_timeline(app.s, 0, 600, show_issues=app.show_issues)
         self.assertFalse(app.show_issues)
         self.assertGreater(int(np.abs(on.astype(int) - off.astype(int)).sum()), 0)
-        app.listbox.selection_set(1)
+        app.issue_table.selection_set("1")
         app.issue_resolve()
         self.assertEqual(app.issues_var.get(), "Items: 2")
         self.assertEqual([fd.frame for fd in app.s.findings], [5, 40])
@@ -263,7 +263,9 @@ class ParityTests(unittest.TestCase):
         app.s.findings = [Finding("yellow", "jump", "matphai", 30, 30, (), "nhảy", 20.0, [30])]
         app._fill_issues()
         self.assertEqual(app.issues_var.get(), "Items: 3")
-        self.assertTrue(app.listbox.get(0).startswith("Quay đầu  #1  frame 20–39"), app.listbox.get(0))
+        self.assertEqual(self.row(app, 0), ("#1", "20–39", "Quay đầu mạnh, co 30%"))
+        self.assertIn("Mức: Xanh lá", app.issue_info[0])      # quay đầu: thông tin, xanh lá
+        self.assertIn("Mức: Vàng", app.issue_info[2])
         self.assertEqual(app.items, [20, 50, 30])
         app.go(0)
         seen = []
@@ -271,12 +273,11 @@ class ParityTests(unittest.TestCase):
             app.issue_step(1)
             seen.append(app.f)
         self.assertEqual(seen, [20, 30, 50])
-        app.listbox.selection_set(0)
+        app.issue_table.selection_set("0")
         app.issue_resolve()
         self.assertEqual((len(app.s.turns[0].turns), len(app.s.findings)), (2, 1))
         self.assertIn("tính lại từ điểm ghim", app.notice)
-        app.listbox.selection_clear(0, "end")
-        app.listbox.selection_set(2)
+        app.issue_table.selection_set("2")
         app.issue_resolve()
         self.assertEqual(app.s.findings, [])
         app.s.turns = []
@@ -287,12 +288,49 @@ class ParityTests(unittest.TestCase):
         app = self.pinned_app()
         app.s.turns = self.two_turns()
         app.refresh()
-        self.assertNotIn("7 frame không chắc", app.listbox.get(0))
+        self.assertNotIn("7 frame không chắc", app.issue_info[0])
         t = app.s.turns[0].turns[0]
         app.s.turns = [TurnReport("ok", 150.0, (Turn(t.first, t.last, t.peak, 0.33, "mạnh", "matphai", t.confirmed, 7, 0, 0),) + app.s.turns[0].turns[1:], 0, 3)]
         app.refresh()                                       # cùng ranh giới, cùng số ghim xác nhận, nhưng chữ đã đổi
-        self.assertIn("7 frame không chắc", app.listbox.get(0))
-        self.assertIn("co 33%", app.listbox.get(0))
+        self.assertIn("7 frame không chắc", app.issue_info[0])      # chi tiết (bấm vào dòng mới thấy)
+        self.assertIn("co 33%", self.row(app, 0)[2])                # dòng ngắn
+
+    def row(self, app, i):
+        """Giá trị ba cột (#, Frame, Vấn đề) của dòng thứ i trong bảng Issues."""
+        return tuple(app.issue_table.item(app.issue_table.get_children()[i], "values"))
+
+    def test_issue_table_columns_can_be_resized_and_fit_the_panel(self):
+        app = self.pinned_app()
+        tab = app.issue_table
+        cols = ("#0", "n", "frame", "desc")
+        for c in cols:
+            self.assertLessEqual(tab.column(c, "minwidth"), 40, c)        # kéo mép cột để thu hẹp được, không bị kẹt ở độ rộng ban đầu
+        self.assertLessEqual(sum(int(tab.column(c, "width")) for c in cols), 350)   # mặc định vừa panel (~380 px): cột Mức không bị đẩy ra ngoài
+        self.assertTrue(all(tab.column(c, "stretch") in (0, False) for c in ("#0", "n", "frame")))
+        self.assertTrue(app.issue_xbar.winfo_exists())                    # kéo rộng hơn panel thì cuộn ngang
+
+    def test_issue_table_has_separate_columns_and_only_the_dot_is_colored(self):
+        app = self.pinned_app()
+        app.s.findings = [Finding("red", "crossing", "mattrai", 5, 6, (14, 16, 18), "đường viền bắt chéo", None, [5, 6]),
+                          Finding("yellow", "ear_closed", "matphai", 20, 20, (), "mắt gần nhắm (EAR 0.05)", 0.05, [20])]
+        app._fill_issues()
+        tab = app.issue_table
+        self.assertEqual(tuple(tab["columns"]), ("n", "frame", "desc"))     # không có cột chữ "Mức": chấm màu thay cho nó
+        self.assertEqual([tab.heading(c, "text") for c in ("n", "frame", "desc")], ["#", "Frame", "Vấn đề"])
+        self.assertEqual(self.row(app, 0), ("#1", "5–6", "Đường viền bắt chéo"))
+        self.assertEqual(self.row(app, 1), ("#2", "20", "Mắt gần nhắm"))
+        ids = tab.get_children()
+        self.assertNotEqual(tab.item(ids[0], "image"), tab.item(ids[1], "image"))     # chấm đỏ khác chấm vàng
+        self.assertEqual(tab.item(ids[0], "tags"), "")                                  # không tô cả dòng
+        tab.selection_set(ids[0])
+        app.on_issue_select(None)
+        text = app.issue_detail.cget("text")
+        for part in ("#1 · Mức: Đỏ", "Frame 5–6 (2 frame)", "mattrai", "đường viền bắt chéo", "Điểm liên quan: 14, 16, 18", "Cách xử lý"):
+            self.assertIn(part, text)
+        app.s.findings = []
+        app._fill_issues()
+        self.assertEqual(tab.item(tab.get_children()[0], "values")[2], "Không có frame nào cần chú ý.")
+        self.assertEqual(app.issues_var.get(), "Items: 0")
 
     def test_new_turns_raise_a_banner_that_says_which_frames_to_fix(self):
         app = self.pinned_app()
@@ -330,7 +368,7 @@ class ParityTests(unittest.TestCase):
         self.assertEqual(app.issues_var.get(), "Items: 0")          # vẽ nhẹ (kéo, di chuột) không dựng lại danh sách
         app.refresh()
         self.assertEqual(app.issues_var.get(), "Items: 2")
-        self.assertEqual(app.listbox.size(), 2)
+        self.assertEqual(len(app.issue_table.get_children()), 2)
         app.s.turns = []
         app.refresh()
         self.assertEqual(app.issues_var.get(), "Items: 0")

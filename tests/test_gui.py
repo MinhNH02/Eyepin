@@ -997,7 +997,7 @@ class GuiTests(unittest.TestCase):
         app, seq = self.make_app()
         self.click_pins(app, seq, 0)
         app.scan()
-        self.assertGreaterEqual(app.listbox.size(), 1)
+        self.assertGreaterEqual(len(app.issue_table.get_children()), 1)
         out = os.path.join(self.dir, "e.xml")
         self.assertEqual(app.s.export(out)["path"], out)
 
