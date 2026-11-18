@@ -11,6 +11,11 @@ xuất file import, cho CVAT import vào job, xuất lại từ CVAT, rồi so t
   V6  số liệu "Manually / Interpolated" tool báo trong hộp Thông tin khớp bảng thống kê của CVAT (đếm keyframe)
   V12 mắt kiểu shape: job có 1 track matphai + 3 shape mattrai (một có điểm Occluded, một có điểm Outside): đúng số, frame, toạ độ, cờ;
       V12b hai người cùng nhãn cùng frame thành hai shape. Đọc lại bằng JSON như `GET /api/jobs/{id}/annotations` (đi qua `get_job_data`)
+      V12c cùng job của V12, bản xuất "CVAT for video" thật: `cvatsync._compare` (bỏ track CVAT sinh từ shape bằng `_shape_tracks`) không
+      báo lệch nào, đúng phép đối chiếu `cvatsync.send` chạy sau khi gửi; V12d chế độ QC khi mở lại job đó (`cvatsource._shapes_from_video`):
+      shape về đúng frame, không kéo dài sang frame sau
+
+AN TOÀN: job có bất kỳ shape, track hay tag nào thì từ chối chạy và KHÔNG xoá gì (chỉ dọn job sau khi đã kiểm job trống).
 
 Chạy:  python tests\\verify_vs_cvat.py [job_id=5] [thư_mục_ảnh]    Xoá nhãn trong job khi xong.
 """
@@ -29,8 +34,10 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from eyepin import cvatxml  # noqa: E402
-from eyepin.cvatsync import _compare_shapes, _json_eye_shapes, _sublabel_points  # noqa: E402
+from eyepin.cvatsync import _compare, _compare_shapes, _expected, _expected_shapes, _json_eye_shapes, _sublabel_points  # noqa: E402
+from eyepin.cvatsource import _shapes_from_video  # noqa: E402
 from eyepin.geometry import EYES  # noqa: E402
+from eyepin.scan import eye_at  # noqa: E402
 from eyepin.scan import scan  # noqa: E402
 from eyepin.session import Session  # noqa: E402
 from test_geometry import lens_eye  # noqa: E402
@@ -97,10 +104,14 @@ def check(name, ok, detail):
 def main():
     sys.stdout.reconfigure(encoding="utf-8")
     wd = tempfile.mkdtemp(prefix="eyepin_vs_cvat_")
+    cleanup = False                  # chỉ dọn job khi đã kiểm job trống: chạy nhầm vào job có nhãn thì từ chối và KHÔNG xoá gì
     try:
-        count = django(f"from cvat.apps.engine.models import LabeledShape, LabeledTrack; print(LabeledShape.objects.filter(job_id={JOB}).count() + LabeledTrack.objects.filter(job_id={JOB}).count())")[-1]
+        count = django("from cvat.apps.engine.models import LabeledShape, LabeledTrack, LabeledImage; "
+                       f"print(LabeledShape.objects.filter(job_id={JOB}).count() + LabeledTrack.objects.filter(job_id={JOB}).count() "
+                       f"+ LabeledImage.objects.filter(job_id={JOB}).count())")[-1]
         if count != "0":
-            raise SystemExit(f"Job {JOB} không trống ({count} đối tượng); chọn job trống để khỏi mất nhãn.")
+            raise SystemExit(f"Job {JOB} không trống ({count} đối tượng: shape, track, tag); chọn job trống để khỏi mất nhãn. Không xoá gì.")
+        cleanup = True
         s = Session(FRAMES)
         base = export("CVAT for images 1.1", "base_images", wd)
         s.ann = cvatxml.parse(base)
@@ -305,11 +316,26 @@ def main():
                     break
                 track_err = max(track_err, math.dist(key0["points"][:2], s3.pins[0][who[1]]))
         msgs = _compare_shapes(aj, labels, {"mattrai": s3.build_shapes(), "matphai": []}, set(), nums)
+        with open(export("CVAT for video 1.1", "shapes_mixed_video", wd), "rb") as fh:
+            video12 = cvatxml.parse_bytes(fh.read(), nums)      # số frame của task -> chỉ số EyePin, như cvatsync.send
+        cmp12 = _compare(video12, _expected(s3), set(), nums, _expected_shapes(s3))
         check("V12 shape: CVAT có 1 track matphai và 3 shape mattrai, đúng frame, toạ độ < 0,01 px, cờ đúng",
               len(tr_name["matphai"]) == 1 and not tr_name["mattrai"] and len(sh_name["mattrai"]) == 3 and not sh_name["matphai"]
               and sorted(got_by_frame) == shape_frames and not bad and track_err is not None and track_err < 0.01 and not msgs,
               f"JSON: track {len(aj['tracks'])} (matphai {len(tr_name['matphai'])}), shape {len(aj['shapes'])} ở frame {sorted(got_by_frame)}; "
               f"sai lệch {bad[:4]}; track matphai lệch {track_err}; _compare_shapes {msgs[:3] or 'khớp'}")
+        check("V12c bản xuất video thật của job V12: cvatsync._compare (bỏ track sinh từ shape) không báo lệch",
+              not cmp12 and len(video12.tracks["mattrai"]) == len(shape_frames) and len(video12.tracks["matphai"]) == 1,
+              f"bản xuất video: mattrai {len(video12.tracks['mattrai'])} track (sinh từ {len(shape_frames)} shape), "
+              f"matphai {len(video12.tracks['matphai'])} track; _compare {cmp12[:3] or 'khớp'}")
+        with open(os.path.join(wd, "shapes_mixed_video", "annotations.xml"), "rb") as fh:
+            qcv = cvatxml.parse_bytes(fh.read(), nums)
+        _shapes_from_video(qcv, aj, labels, nums)
+        smear = [f + 1 for f in shape_frames if f + 1 < n and eye_at(qcv, "mattrai", f + 1) is not None]
+        check("V12d mở lại job V12 ở chế độ QC: shape mattrai về đúng frame, không kéo dài sang frame sau, track matphai giữ nguyên",
+              sorted(qcv.shapes["mattrai"]) == shape_frames and not qcv.tracks["mattrai"] and len(qcv.tracks["matphai"]) == 1 and not smear,
+              f"shape mattrai ở {sorted(qcv.shapes['mattrai'])}, track mattrai còn {len(qcv.tracks['mattrai'])}, "
+              f"matphai {len(qcv.tracks['matphai'])} track; frame sau shape vẫn có nhãn: {smear or 'không'}")
         # hai người, cùng nhãn, cùng frame: hai shape
         s4 = Session(FRAMES)
         s4.pin_eye(20, "mattrai", {i: a[i] for i in ml.pins}, kind="shape")
@@ -327,10 +353,10 @@ def main():
         print("KẾT QUẢ:", "ĐẠT" if ok else "KHÔNG ĐẠT", f"({sum(results)}/{len(results)})")
         return 0 if ok else 1
     finally:
-        if not os.environ.get("EYEPIN_KEEP"):
+        if cleanup and not os.environ.get("EYEPIN_KEEP"):
             django(f"from cvat.apps.dataset_manager.task import JobAnnotation; JobAnnotation({JOB}).delete()")
+            print(f"Đã dọn nhãn trong job {JOB}")
         shutil.rmtree(wd, ignore_errors=True)
-        print(f"Đã dọn nhãn trong job {JOB}")
 
 
 if __name__ == "__main__":
