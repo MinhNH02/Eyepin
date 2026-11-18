@@ -902,14 +902,22 @@ class Session:
     # ---- lưu / mở phiên làm việc (chỉ toạ độ và cờ, không có ảnh) ----
     def state(self) -> dict:
         """Mọi thứ người dùng đã làm: với từng bộ đối tượng, các frame ghim, cờ Occluded/Outside, điểm ước lượng, ID, kiểu (track/shape) của
-        từng mắt và ID của từng shape. Nhãn do tool tính được tính lại khi mở. Bản 3 thêm `kind` và `shape_ids`; bản 1, 2 mở được (toàn track)."""
-        out = {"version": 3, "frames": self.n_frames, "names": [self.names[0], self.names[-1]], "deleted": sorted(self.deleted),
-               "cur": self.cur, "next_id": self.next_id,
-               "layers": [{"pins": {str(f): {str(i): list(p) for i, p in pts.items()} for f, pts in L.pins.items()},
-                           "flags": {str(f): {str(i): k for i, k in fl.items()} for f, fl in L.flags.items()},
-                           "estimates": {str(f): {str(i): r for i, r in es.items()} for f, es in L.estimates.items()},
-                           "ids": dict(L.obj_ids), "kind": dict(L.kind),
-                           "shape_ids": {l: {str(f): v for f, v in d.items()} for l, d in L.shape_ids.items()}} for L in self.layers]}
+        từng mắt và ID của từng shape. Nhãn do tool tính được tính lại khi mở. Bản 3 thêm `kind` và `shape_ids`; bản 1, 2 mở được (toàn track).
+        Không người nào có mắt shape thì ghi đúng dạng bản 2 như trước (không `kind`, `shape_ids`): bản EyePin cũ chỉ nhận bản 1, 2 nên vẫn mở
+        được file của phiên chỉ có track (và tự lưu của nó không ghi đè file bằng thông báo lỗi khó hiểu)."""
+        shapes = any(L.kind[l] == "shape" for L in self.layers for l in EYES)
+        layers = []
+        for L in self.layers:
+            item = {"pins": {str(f): {str(i): list(p) for i, p in pts.items()} for f, pts in L.pins.items()},
+                    "flags": {str(f): {str(i): k for i, k in fl.items()} for f, fl in L.flags.items()},
+                    "estimates": {str(f): {str(i): r for i, r in es.items()} for f, es in L.estimates.items()},
+                    "ids": dict(L.obj_ids)}
+            if shapes:
+                item["kind"] = dict(L.kind)
+                item["shape_ids"] = {l: {str(f): v for f, v in d.items()} for l, d in L.shape_ids.items()}
+            layers.append(item)
+        out = {"version": 3 if shapes else 2, "frames": self.n_frames, "names": [self.names[0], self.names[-1]], "deleted": sorted(self.deleted),
+               "cur": self.cur, "next_id": self.next_id, "layers": layers}
         if self.cvat is not None:
             out["cvat"] = dict(self.cvat)                        # mốc cập nhật của job lúc bắt đầu làm việc (để biết CVAT có bị sửa không)
             out["unsent"] = bool(self.unsent)                    # còn công chưa gửi lên CVAT (Đăng xuất dựa vào đây để hỏi trước khi xoá file phiên)

@@ -227,6 +227,27 @@ class ShapeSessionTests(unittest.TestCase):
         self.assertEqual(back.shape_ids["mattrai"], {3: 1, 5: 10, 8: back.shape_ids["mattrai"][8]})
         self.assertNotIn(back.shape_ids["mattrai"][8], (1, 10, back.obj_ids["matphai"]))
 
+    def test_track_only_session_file_stays_version_2(self):
+        """M6: phiên không có mắt shape ghi đúng dạng file bản 2 như trước (không `kind`, không `shape_ids`) để bản EyePin cũ vẫn mở được;
+        có shape thì bản 3; xoá hết shape thì lại bản 2."""
+        s = Session(self.dir)
+        s.pin_eye(0, "mattrai", four("mattrai", 0))
+        s.add_layer()
+        s.pin_eye(2, "matphai", four("matphai", 2))
+        d = s.state()
+        self.assertEqual(d["version"], 2)
+        for L in d["layers"]:
+            self.assertEqual(set(L), {"pins", "flags", "estimates", "ids"})
+        back = Session(self.dir)
+        back.load_state(json.loads(json.dumps(d)))
+        self.assertEqual(back.kind, {"mattrai": "track", "matphai": "track"})
+        s.select_layer(0)
+        s.pin_eye(5, "matphai", four("matphai", 5), kind="shape")
+        self.assertEqual(s.state()["version"], 3)
+        self.assertEqual(set(s.state()["layers"][1]), {"pins", "flags", "estimates", "ids", "kind", "shape_ids"})
+        s.delete_shape("matphai", 5)
+        self.assertEqual(s.state()["version"], 2)
+
     def test_load_without_next_id_stays_above_shape_ids(self):
         s = self.shapes_at(3, 5)
         d = s.state()
@@ -242,8 +263,8 @@ class ShapeSessionTests(unittest.TestCase):
         s.pin_eye(0, "matphai", four("matphai", 0))
         d = s.state()
         d["version"] = 2
-        for L in d["layers"]:
-            del L["kind"], L["shape_ids"]
+        for L in d["layers"]:                                       # từ M6 phiên chỉ có track đã ghi bản 2 không có hai khoá này
+            L.pop("kind", None), L.pop("shape_ids", None)
         back = Session(self.dir)
         back.load_state(d)
         self.assertEqual(back.kind, {"mattrai": "track", "matphai": "track"})
