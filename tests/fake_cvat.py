@@ -6,7 +6,7 @@ Dùng:
     client = CvatClient(srv.url)
 
 FakeJob(id, task_id=1, task_name="task", n_frames=3, start_frame=0, xml=XML_EMPTY, deleted_frames=(), labels=None, state="in progress", stage="annotation",
-        data_start_frame=0, frame_step=1, media="images", included_frames=None)
+        data_start_frame=0, frame_step=1, media="images", included_frames=None, assignee=None, type="annotation", issue_count=None, listed=True)
     Như CVAT thật (cvat/apps/engine/views.py, data/meta của job): `start_frame`/`stop_frame` của job là số frame TƯƠNG ĐỐI của task (cũng là số
     dùng trong `data?type=frame&number=`, `deleted_frames` và JSON annotations); `GET /api/jobs/{id}/data/meta` trả `start_frame`/`stop_frame`
     TUYỆT ĐỐI của media (`data_start_frame + start_frame*frame_step`), `size` = số frame của job, `frames` một phần tử mỗi frame với
@@ -15,7 +15,21 @@ FakeJob(id, task_id=1, task_name="task", n_frames=3, start_frame=0, xml=XML_EMPT
     .annotations_json là JSON của GET /api/jobs/{id}/annotations (mặc định rỗng); .updated_date đổi mỗi lần import; .labels mặc định là hai skeleton mattrai (14-21) và matphai (22-29)
     (FakeJob.default_labels()); ảnh frame số k (k = start_frame..start_frame+n_frames-1) là test_tracking.render(k) mã hoá JPEG.
 
+    Thêm cho đường báo cáo issue: `assignee` (tên người được giao hoặc None), `type` (loại job, mặc định "annotation"), `issue_count` (số ép vào
+    `issues.count` của job khi liệt kê; None = tự đếm trong FakeCvat.issues, tính cả issue ẩn), `listed` (False: job vắng ở GET /api/jobs
+    nhưng vẫn được đếm vào `jobs.count` của task, như job tài khoản không xem được).
+
 FakeCvat.jobs: dict id -> FakeJob (thêm/bớt được sau khi tạo).
+Issue và bình luận (dạng dữ liệu chép từ design/cvat-api-notes.md, mục "Issue và bình luận"):
+    fake_user(name), fake_issue(id, job, frame, resolved=, owner=, created=, comments=), fake_comment(id, issue, message, owner=, created=)
+    FakeCvat.issues, .comments   list dict như hàm trên tạo (gán thẳng, đổi được giữa chừng)
+    GET /api/issues     lọc `task_id` (task của job chứa issue) và `job_id`, xếp `id` GIẢM dần, bỏ issue có mã trong .hidden_issues; issue có
+                        `comments` None thì trả `{"count": số bình luận trong .comments, "url"}` (bản sao, không sửa dict đang lưu)
+    GET /api/comments   lọc `job_id` (job của issue chứa bình luận) và `issue_id`, xếp `id` giảm dần; BỎ QUA `task_id` như CVAT thật
+    GET /api/jobs       chỉ job `listed`; mỗi dòng thêm `type`, `assignee`, `issues: {url, count}`; GET /api/jobs/{id} không đổi
+    GET /api/tasks      mỗi task thêm `jobs: {count}` (số FakeJob của task, tính cả job không `listed`)
+    page_size=all       trả toàn bộ danh sách trong một trang (không bị .page_size giới hạn)
+    PATCH, PUT, DELETE  được ghi vào requests/calls rồi trả 405 (đường báo cáo chỉ được GET)
 Công tắc (thuộc tính, đổi được giữa chừng):
     fail_401            mọi đường trừ đăng nhập trả 401
     fail_500            mọi đường trừ đăng nhập trả 500
@@ -23,7 +37,9 @@ Công tắc (thuộc tính, đổi được giữa chừng):
     drop_on_poll        True: ngắt kết nối (không trả lời) khi hỏi GET /api/requests/{rq_id}
     shift_on_import     số px: dời toạ độ x của điểm đầu tiên trong XML đã import (mô phỏng CVAT đổi nhãn)
     polls_before_finish số lần hỏi trạng thái còn trả `queued` trước khi `finished` (mặc định 1; rất lớn = không bao giờ xong)
-    page_size           số mục mỗi trang của /api/tasks, /api/jobs, /api/labels (mặc định 100)
+    page_size           số mục mỗi trang của /api/tasks, /api/jobs, /api/labels, /api/issues, /api/comments (mặc định 100)
+    hidden_issues       tập mã issue tài khoản "không xem được": vắng ở GET /api/issues nhưng vẫn được đếm vào `issues.count` của job
+    tamper              dict `đường dẫn -> hàm(payload) -> payload`, áp vào phản hồi DANH SÁCH ngay trước khi gửi (giả lập phản hồi hỏng)
     reject_login_with_auth  True: đăng nhập có kèm header Authorization (khoá cũ) bị trả 401
     redirect_job        True: GET /api/jobs/{id} trả 302 sang http://example.com/ (kiểm client không đi theo)
     lose_non_eye_on_import  True: import xong thì JSON annotations của job mất một đối tượng không phải mắt (shape trước, rồi track)
@@ -55,11 +71,29 @@ import test_tracking as T
 XML_EMPTY = b'<?xml version="1.0" encoding="utf-8"?><annotations><version>1.1</version></annotations>'
 
 
+def fake_user(name):
+    """`owner`/`assignee` dạng CVAT trả; `name` None thì trả None (tài khoản đã xoá / chưa giao)."""
+    return None if name is None else {"url": "http://localhost:8080/api/users/7", "id": 7, "username": name, "first_name": "", "last_name": ""}
+
+
+def fake_issue(id, job, frame, resolved=False, owner="qa_01", created="2026-11-18T07:05:00.000000Z", comments=None):
+    """Issue dạng CVAT trả. `comments` None: server giả tự đếm bình luận của issue khi trả; số nguyên: ép `comments.count` đúng số đó."""
+    count = None if comments is None else {"count": comments, "url": "http://localhost:8080/api/comments?issue_id=%d" % id}
+    return {"id": id, "frame": frame, "position": [10.0, 10.0, 50.0, 50.0], "job": job, "owner": fake_user(owner), "assignee": None,
+            "created_date": created, "updated_date": created, "resolved": resolved, "comments": count}
+
+
+def fake_comment(id, issue, message, owner="qa_01", created="2026-11-18T07:05:00.000000Z"):
+    return {"id": id, "issue": issue, "owner": fake_user(owner), "message": message, "created_date": created, "updated_date": created}
+
+
 class FakeJob:
     def __init__(self, id, task_id=1, task_name="task", n_frames=3, start_frame=0, xml=XML_EMPTY,
                  deleted_frames=(), labels=None, state="in progress", stage="annotation",
-                 data_start_frame=0, frame_step=1, media="images", included_frames=None):
+                 data_start_frame=0, frame_step=1, media="images", included_frames=None,
+                 assignee=None, type="annotation", issue_count=None, listed=True):
         self.id, self.task_id, self.task_name = id, task_id, task_name
+        self.assignee, self.type, self.issue_count, self.listed = assignee, type, issue_count, listed
         self.n_frames, self.start_frame = n_frames, start_frame
         self.data_start_frame, self.frame_step, self.media = data_start_frame, frame_step, media
         self.included_frames = list(included_frames) if included_frames is not None else None
@@ -102,6 +136,9 @@ class FakeCvat:
         self.shift_on_import = 0.0
         self.polls_before_finish = 1
         self.page_size = 100
+        self.issues, self.comments = [], []
+        self.hidden_issues = set()
+        self.tamper = {}
         self.password = "pw"
         self.username = "minh"
         self._sessions: dict[str, str] = {}   # sessionid -> csrftoken của các lần đăng nhập thành công
@@ -127,6 +164,15 @@ class FakeCvat:
 
             def do_POST(self):
                 outer._handle(self, "POST")
+
+            def do_PATCH(self):
+                outer._handle(self, "PATCH")
+
+            def do_PUT(self):
+                outer._handle(self, "PUT")
+
+            def do_DELETE(self):
+                outer._handle(self, "DELETE")
 
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._httpd.daemon_threads = True
@@ -201,18 +247,25 @@ class FakeCvat:
                           cookies=("sessionid=%s; Path=/; HttpOnly; SameSite=Lax" % sid, "csrftoken=%s; Path=/; SameSite=Lax" % csrf))
 
     def _route(self, h, method, path, q, body):
+        if method in ("PATCH", "PUT", "DELETE"):
+            return self._send(h, 405, {"detail": "method not allowed"})
         if path == "/api/users/self":
             return self._send(h, 200, {"id": 1, "username": self.username})
         if path == "/api/tasks":
             tasks = {}
             for j in self.jobs.values():
-                t = tasks.setdefault(j.task_id, {"id": j.task_id, "name": j.task_name, "size": 0})
+                t = tasks.setdefault(j.task_id, {"id": j.task_id, "name": j.task_name, "size": 0, "jobs": {"count": 0}})
                 t["size"] += j.n_frames
+                t["jobs"]["count"] += 1
             return self._page(h, q, path, sorted(tasks.values(), key=lambda t: t["id"]))
         if path == "/api/jobs":
             tid = int(q["task_id"]) if "task_id" in q else None
-            rows = [self._job_json(j) for j in self.jobs.values() if tid is None or j.task_id == tid]
+            rows = [self._job_row(j) for j in self.jobs.values() if j.listed and (tid is None or j.task_id == tid)]
             return self._page(h, q, path, sorted(rows, key=lambda r: r["id"]))
+        if path == "/api/issues":
+            return self._page(h, q, path, self._issue_rows(q))
+        if path == "/api/comments":
+            return self._page(h, q, path, self._comment_rows(q))
         if path == "/api/labels":
             j = self.jobs.get(int(q.get("job_id", -1)))
             return self._page(h, q, path, j.labels) if j else self._send(h, 404, {})
@@ -278,6 +331,37 @@ class FakeCvat:
         return {"id": j.id, "task_id": j.task_id, "start_frame": j.start_frame, "stop_frame": j.stop_frame,
                 "state": j.state, "stage": j.stage, "updated_date": j.updated_date}
 
+    def _job_row(self, j):
+        """Một dòng của GET /api/jobs: `_job_json` (không đổi) cộng `type`, `assignee`, `issues` như CVAT thật."""
+        n = j.issue_count if j.issue_count is not None else sum(1 for i in self.issues if i["job"] == j.id)  # tính cả issue ẩn
+        return dict(self._job_json(j), type=j.type, assignee=fake_user(j.assignee),
+                    issues={"url": "%s/api/issues?job_id=%d" % (self.url, j.id), "count": n})
+
+    def _issue_rows(self, q):
+        rows = [i for i in self.issues if i["id"] not in self.hidden_issues]
+        if "task_id" in q:
+            rows = [i for i in rows if self.jobs[i["job"]].task_id == int(q["task_id"])]
+        if "job_id" in q:
+            rows = [i for i in rows if i["job"] == int(q["job_id"])]
+        out = []
+        for i in sorted(rows, key=lambda r: r["id"], reverse=True):
+            i = dict(i)                                         # bản sao: không sửa dict đang lưu trong self.issues
+            if i["comments"] is None:
+                i["comments"] = {"count": sum(1 for c in self.comments if c["issue"] == i["id"]),
+                                 "url": "%s/api/comments?issue_id=%d" % (self.url, i["id"])}
+            out.append(i)
+        return out
+
+    def _comment_rows(self, q):
+        """`task_id` bị bỏ qua như CVAT thật: tham số lạ không lọc gì."""
+        job_of = {i["id"]: i["job"] for i in self.issues}
+        rows = self.comments
+        if "job_id" in q:
+            rows = [c for c in rows if job_of.get(c["issue"]) == int(q["job_id"])]
+        if "issue_id" in q:
+            rows = [c for c in rows if c["issue"] == int(q["issue_id"])]
+        return sorted(rows, key=lambda r: r["id"], reverse=True)
+
     @staticmethod
     def _multipart_file(ctype, body):
         m = re.search(r"boundary=([^;]+)", ctype)
@@ -340,13 +424,19 @@ class FakeCvat:
 
     def _page(self, h, q, path, rows):
         page = int(q.get("page", 1))
-        size = min(int(q.get("page_size", self.page_size)), self.page_size)
+        if q.get("page_size") == "all":                       # như CVAT thật (pagination.py): toàn bộ danh sách trong một trang
+            size = max(len(rows), 1)
+        else:
+            size = min(int(q.get("page_size", self.page_size)), self.page_size)
         chunk = rows[(page - 1) * size: page * size]
         nxt = None
         if page * size < len(rows):
             qq = dict(q, page=page + 1)
             nxt = self.url + path + "?" + "&".join("%s=%s" % kv for kv in qq.items())
-        return self._send(h, 200, {"count": len(rows), "next": nxt, "previous": None, "results": chunk})
+        payload = {"count": len(rows), "next": nxt, "previous": None, "results": chunk}
+        if path in self.tamper:
+            payload = self.tamper[path](payload)
+        return self._send(h, 200, payload)
 
     @staticmethod
     def _send(h, code, payload, ctype="application/json", cookies=()):

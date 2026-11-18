@@ -38,6 +38,32 @@ def _check_local(url: str) -> str:
     return url.rstrip("/")
 
 
+def _is_int(v) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def username(user) -> str:
+    """Tên đăng nhập trong trường `owner`/`assignee` CVAT trả (dict có `username`); `None` (chưa giao, tài khoản đã xoá) hoặc dạng lạ thì `""`."""
+    name = user.get("username") if isinstance(user, dict) else None
+    return name if isinstance(name, str) else ""
+
+
+def task_row(raw: dict) -> dict:
+    """Một dòng task của báo cáo; `jobs` là tổng số job của task (`jobs.count`), `None` nếu CVAT không cho biết."""
+    jobs, name, size = raw.get("jobs"), raw.get("name"), raw.get("size")
+    count = jobs.get("count") if isinstance(jobs, dict) else None
+    return {"id": raw["id"], "name": name if isinstance(name, str) else "", "size": size if _is_int(size) else 0,
+            "jobs": count if _is_int(count) else None}
+
+
+def job_row(raw: dict) -> dict:
+    """Một dòng job của báo cáo; `issues` là số issue CVAT đã đếm sẵn cho job (`issues.count`), `None` nếu không có."""
+    issues, kind = raw.get("issues"), raw.get("type")
+    count = issues.get("count") if isinstance(issues, dict) else None
+    return {"id": raw["id"], "type": kind if isinstance(kind, str) and kind else "annotation", "assignee": username(raw.get("assignee")),
+            "issues": count if _is_int(count) else None}
+
+
 class CvatClient:
     def __init__(self, url: str, timeout: float = 30):
         self.url = _check_local(url)
@@ -197,3 +223,32 @@ class CvatClient:
             if len(lb.get("sublabels") or []) != 8:
                 return "Nhãn '%s' không đủ 8 điểm (có %d)." % (name, len(lb.get("sublabels") or []))
         return None
+
+    # ---- báo cáo issue (chỉ đọc: chỉ GET) ----
+    def _all(self, path: str, params: dict, what: str) -> list[dict]:
+        """Lấy MỘT danh sách phân trang của CVAT trong đúng một phản hồi (`page_size=all`) và kiểm là trọn vẹn: `count` khớp số mục, không còn
+        trang sau, mọi mục là dict có `id` số nguyên không trùng. Sai điều nào cũng là lỗi, không đoán và không trả danh sách thiếu. `what` là tên loại mục
+        trong thông điệp lỗi."""
+        d = self._json("GET", path, params=dict(params, page_size="all"))
+        results = d.get("results") if isinstance(d, dict) else None
+        ok = (isinstance(d, dict) and isinstance(results, list) and _is_int(d.get("count")) and not d.get("next") and len(results) == d["count"]
+              and all(isinstance(r, dict) and _is_int(r.get("id")) for r in results) and len({r["id"] for r in results}) == len(results))
+        if not ok:
+            raise CvatError("CVAT trả danh sách %s không trọn vẹn (có thể dữ liệu vừa thay đổi). Hãy bấm Làm mới." % what)
+        return results
+
+    def report_tasks(self) -> list[dict]:
+        """Mọi task tài khoản xem được, dạng `task_row`, `id` tăng dần."""
+        return sorted((task_row(t) for t in self._all("/api/tasks", {}, "task")), key=lambda r: r["id"])
+
+    def report_jobs(self, task_id: int) -> list[dict]:
+        """Các job của một task, dạng `job_row` (kèm số issue CVAT đếm sẵn), `id` tăng dần."""
+        return sorted((job_row(j) for j in self._all("/api/jobs", {"task_id": task_id}, "job")), key=lambda r: r["id"])
+
+    def issues(self, task_id: int) -> list[dict]:
+        """Mọi issue của một task, dict nguyên dạng CVAT trả, đúng thứ tự CVAT trả (`id` giảm dần)."""
+        return self._all("/api/issues", {"task_id": task_id}, "issue")
+
+    def comments(self, job_id: int) -> list[dict]:
+        """Mọi bình luận của một job, dict nguyên dạng CVAT trả (`id` giảm dần). Chỉ lọc theo job: `task_id` bị CVAT bỏ qua và trả mọi bình luận."""
+        return self._all("/api/comments", {"job_id": job_id}, "bình luận")
