@@ -401,6 +401,36 @@ class ShapeGuiTests(unittest.TestCase):
         app.toggle_lock_all()
         self.assertTrue(app.locked.has(0, "mattrai"))
 
+    def test_change_label_on_shape_card_swaps_only_this_frame(self):
+        """I6: đổi label ở thẻ shape (hai mắt đều shape): chỉ hai shape ở frame đang xem đổi chỗ; frame khác giữ nguyên; Ctrl+Z trả lại."""
+        app = self.make_app()
+        for f in (3, 5):
+            self.draw(app, f)
+            self.draw(app, f, label="matphai")
+        app.go(3)
+        before = self.snap(app.s)
+        p5 = dict(app.s.pins[5])
+        left3 = {i: app.s.pins[3][i] for i in EYES["mattrai"].ids}
+        app.select_eye("mattrai", quiet=True)
+        app.swap_labels()
+        self.assertEqual({i - 8: app.s.pins[3][i] for i in EYES["matphai"].ids}, left3)
+        self.assertEqual(app.s.pins[5], p5)
+        self.assertIn("frame 3", app.notice)
+        self.assertEqual(len(app.s._undo), before["undo"] + 1)
+        app.undo()
+        self.assertEqual({k: v for k, v in self.snap(app.s).items() if k != "undo"}, {k: v for k, v in before.items() if k != "undo"})
+
+    def test_change_label_refused_for_track_and_shape_mix(self):
+        app = self.make_app()
+        self.draw(app, 0, label="matphai", kind="track")
+        self.draw(app, 3)
+        app.go(3)
+        app.select_eye("mattrai", quiet=True)
+        before = self.snap(app.s)
+        app.swap_labels()
+        self.assertEqual(self.snap(app.s), before)
+        self.assertIn("Không đổi label được", app.notice)
+
     # ---------- I3: câu báo gửi / xuất có đếm shape ----------
     def sent_notice(self, keyframes, shapes):
         """Câu báo của `_do_send` khi gửi xong và khớp (việc nền giả chạy ngay, không chạm mạng)."""

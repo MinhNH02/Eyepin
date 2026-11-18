@@ -515,6 +515,31 @@ class Session:
         self.estimates = {f: {mp[i]: r for i, r in es.items()} for f, es in self.estimates.items()}
         self.recompute()
 
+    def swap_shapes_at(self, frame: int) -> None:
+        """Đổi label của hai shape ở RIÊNG `frame` (mattrai ↔ matphai), như đổi label một shape trong CVAT: điểm (đổi id), cờ, ước lượng và ID
+        shape của frame đó đổi chỗ; frame khác giữ nguyên. Một bước hoàn tác. Cần cả hai mắt của người đang chọn là shape và frame có shape của
+        cả hai, không thì ValueError tiếng Việt và phiên không đổi gì (một mắt track: đổi ở một frame sẽ tách track; thiếu một shape: không có
+        gì để đổi chỗ)."""
+        self._guard_qc()
+        kinds = {l: self.kind[l] for l in EYES}
+        if any(k != "shape" for k in kinds.values()):
+            raise ValueError(f"Không đổi label được: {', '.join(f'{l} là {k}' for l, k in kinds.items())}. Đổi label ở một frame chỉ làm được "
+                             "khi cả hai mắt của người này là shape; với track, đổi label hoán đổi hai mắt ở mọi frame.")
+        miss = [l for l in EYES if not self.has_shape(l, frame)]
+        if miss:
+            raise ValueError(f"Không đổi label được: frame {frame} không có shape {' và '.join(miss)}; cần shape của cả hai mắt ở frame này.")
+        a, b = EYES["mattrai"].ids, EYES["matphai"].ids
+        mp = {**dict(zip(a, b)), **dict(zip(b, a))}
+        self._push_undo()
+        self.pins[frame] = {mp.get(i, i): p for i, p in self.pins[frame].items()}
+        for store in (self.flags, self.estimates):
+            if frame in store:
+                store[frame] = {mp.get(i, i): v for i, v in store[frame].items()}
+        ids = self.shape_ids
+        ids["mattrai"][frame], ids["matphai"][frame] = ids["matphai"][frame], ids["mattrai"][frame]
+        self.touched.update({l: time.time() for l in EYES})
+        self.recompute()
+
     def _propagate_source(self, frame: int) -> dict[int, Point]:
         """Điểm sẽ được nhân từ `frame`: điểm ghim của frame nếu frame là frame ghim, không thì nhãn do tool tính (như trước)."""
         if frame not in self.labels and frame not in self.pins:

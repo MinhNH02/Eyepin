@@ -488,11 +488,19 @@ class ObjectsMixin:
     def swap_labels(self):
         """Đổi label (ô label trên thẻ, menu ⋮): hoán đổi dữ liệu mattrai ↔ matphai của người đang chọn. Ẩn riêng, khoá và Pinned đi theo
         MẮT: `swap_eyes` đổi chỗ mã mắt (`Layer.eye_uid`) cùng dữ liệu trong một bước hoàn tác, nên Ctrl+Z / Ctrl+Y đổi lại cả trạng thái (B08).
-        Một trong hai mắt đang khoá thì từ chối: đổi label sẽ ghi đè dữ liệu của mắt khoá."""
+        Một trong hai mắt đang khoá thì từ chối: đổi label sẽ ghi đè dữ liệu của mắt khoá.
+        Người có mắt shape (I6): như CVAT, đổi label của shape chỉ đổi ở frame đang xem (`Session.swap_shapes_at`, cần cả hai mắt là shape và
+        frame có shape của cả hai); một mắt track một mắt shape thì từ chối, không đổi gì. Người chỉ có track: hoán đổi ở mọi frame như cũ."""
         if not self.s or not self.s.pins:
             self.notice = "Chưa có frame ghim để đổi label."
         elif any(l in self.locked for l in EYES):
             self.notice = f"{' và '.join(l for l in EYES if l in self.locked)} đang bị khoá: mở khoá trước khi đổi label."
+        elif any(self.s.eye_kind(l) == "shape" for l in EYES):
+            try:
+                self.s.swap_shapes_at(self.f)
+                self.notice = f"Đã đổi label hai shape ở frame {self.f} (mattrai ↔ matphai); các frame khác giữ nguyên."
+            except ValueError as err:
+                self.notice = str(err)
         else:
             self.s.swap_eyes()
             self.notice = "Đã hoán đổi mattrai và matphai ở mọi frame ghim."

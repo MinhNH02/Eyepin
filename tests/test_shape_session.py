@@ -359,6 +359,48 @@ class ShapeSessionTests(unittest.TestCase):
         self.assertEqual(s.eye_keyframes("mattrai"), [2, 3, 4, 5])
         self.assertEqual(s.propagate_eyes(2), ["mattrai"])
 
+    def both_shapes(self, *frames: int) -> Session:
+        s = Session(self.dir)
+        for f in frames:
+            s.pin_eye(f, "mattrai", four("mattrai", f), kind="shape")
+            s.pin_eye(f, "matphai", four("matphai", f), kind="shape")
+        return s
+
+    def test_swap_shapes_at_changes_only_that_frame(self):
+        """I6: đổi label hai shape ở frame 3: điểm, cờ, ước lượng, ID shape của frame 3 đổi chỗ; frame 5 giữ nguyên; một bước hoàn tác."""
+        s = self.both_shapes(3, 5)
+        s.toggle_flag(3, 15, "occluded")
+        s.estimates[3] = {16: 2.0}
+        before = self.state(s)
+        left3 = {i: s.pins[3][i] for i in ML.ids}
+        right3 = {i: s.pins[3][i] for i in MR.ids}
+        ids3 = (s.shape_ids["mattrai"][3], s.shape_ids["matphai"][3])
+        s.swap_shapes_at(3)
+        self.assertEqual({i: s.pins[3][i] for i in MR.ids}, {i + 8: p for i, p in left3.items()})
+        self.assertEqual({i: s.pins[3][i] for i in ML.ids}, {i - 8: p for i, p in right3.items()})
+        self.assertEqual(s.flags[3], {23: "occluded"})
+        self.assertEqual(s.estimates[3], {24: 2.0})
+        self.assertEqual((s.shape_ids["matphai"][3], s.shape_ids["mattrai"][3]), ids3)
+        self.assertEqual(s.pins[5], before["pins"][5])
+        self.assertEqual({l: d[5] for l, d in s.shape_ids.items()}, {l: d[5] for l, d in before["shape_ids"].items()})
+        self.assertEqual(len(s._undo), before["undo"] + 1)
+        self.assertTrue(s.undo())
+        self.assertEqual({k: v for k, v in self.state(s).items() if k != "undo"}, {k: v for k, v in before.items() if k != "undo"})
+
+    def test_swap_shapes_at_refuses_mixed_kinds_or_missing_shape(self):
+        s = self.shapes_at(3)
+        s.pin_eye(0, "matphai", four("matphai", 0), kind="track")
+        was = self.state(s)
+        with self.assertRaises(ValueError):
+            s.swap_shapes_at(3)
+        self.assertEqual(self.state(s), was)
+        s = self.both_shapes(3)
+        s.pin_eye(5, "mattrai", four("mattrai", 5), kind="shape")      # frame 5 chỉ có shape mattrai
+        was = self.state(s)
+        with self.assertRaises(ValueError):
+            s.swap_shapes_at(5)
+        self.assertEqual(self.state(s), was)
+
     def test_swap_moves_kind_and_ids(self):
         s = self.shapes_at(3)
         s.pin_eye(0, "matphai", four("matphai", 0))
