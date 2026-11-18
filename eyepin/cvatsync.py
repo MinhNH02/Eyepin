@@ -246,7 +246,7 @@ def _cap(out: list[str]) -> list[str]:
 
 
 # ---- dạng JSON của shape skeleton trong `GET /api/jobs/{id}/annotations` ----
-# Đọc từ mã nguồn CVAT, CHƯA kiểm trên CVAT thật (Task 1 của plan shape): mỗi shape có "type": "skeleton", "frame" (số frame tương đối
+# Đã kiểm trên CVAT 2.75 local (design/cvat-api-notes.md, "Shape mắt (2026-11-18)", câu 4): mỗi shape có "type": "skeleton", "frame" (số frame tương đối
 # của job, như `session.source.frame_numbers`), "label_id" (id nhãn skeleton), "elements": mỗi điểm một phần tử có "label_id" (id nhãn
 # con; tên nhãn con là số điểm "14".."29"), "points": [x, y], "occluded", "outside". Sai chỗ nào thì chỉ sửa hai hàm dưới.
 
@@ -347,18 +347,28 @@ def _key_dist(a: EyeKey, b: EyeKey) -> float:
     return sum(d) / len(d) if d else 0.0
 
 
+def _key_outside(k: EyeKey) -> bool:
+    """Cả mắt Outside ở frame này: cờ trên thẻ <skeleton>, hoặc mọi điểm đều Outside. CVAT 2.75 xuất frame Outside của track sinh từ shape
+    KHÔNG có `outside` trên thẻ <skeleton>, chỉ có ở từng <points> (design/cvat-api-notes.md, "Shape mắt (2026-11-18)", câu 5)."""
+    return k.outside or (bool(k.points) and all(p.outside for p in k.points.values()))
+
+
 def _shape_tracks(tracks: list, sent: list[EyeShape]) -> list:
     """Các track trong `tracks` (một nhãn, bản xuất "CVAT for video") được coi là track CVAT sinh ra từ các shape `sent` tool đã gửi.
 
-    Dạng theo mã nguồn CVAT (`ShapeManager.to_tracks`; chưa kiểm trên CVAT thật): keyframe ở frame của shape rồi keyframe Outside ở frame kế,
-    nên ứng viên là track chỉ có MỘT frame không Outside và frame đó là keyframe. Track thật bản xuất video ghi mọi frame từ keyframe đầu tới
-    hết job nên chỉ giống ứng viên khi nằm ở frame cuối. Mỗi shape đã gửi bỏ nhiều nhất một ứng viên cùng frame, chọn ứng viên có điểm gần
-    shape nhất; vì vậy track thật không bao giờ bị bỏ nhiều hơn số shape, và track thật CVAT làm mất vẫn lộ ra ở phép đếm track."""
+    Dạng đã kiểm trên CVAT 2.75 (design/cvat-api-notes.md, "Shape mắt (2026-11-18)", câu 5; `ShapeManager.to_tracks`): keyframe ở frame f của
+    shape rồi keyframe ở frame f+1 có cả 8 điểm Outside (thẻ <skeleton> không mang `outside`); shape ở frame cuối của job chỉ có frame f.
+    Ứng viên: frame đầu f của track là keyframe và mọi frame sau đó đều Outside (`_key_outside`; frame f không bắt buộc có điểm không
+    Outside, để shape có cả 8 điểm Outside vẫn nhận ra). Track thật bản xuất video ghi mọi frame từ keyframe đầu tới hết job nên chỉ giống ứng
+    viên khi nằm ở frame cuối, hoặc khi mắt Outside hẳn ngay sau keyframe đầu. Mỗi shape đã gửi bỏ nhiều nhất một ứng viên cùng frame, chọn ứng
+    viên có điểm gần shape nhất; vì vậy track thật không bao giờ bị bỏ nhiều hơn số shape, và track thật CVAT làm mất vẫn lộ ra ở phép đếm track."""
     cands: dict[int, list] = {}
     for t in tracks:
-        real = [f for f, k in t.keys.items() if not k.outside]
-        if len(real) == 1 and t.keys[real[0]].keyframe:
-            cands.setdefault(real[0], []).append(t)
+        if not t.keys:
+            continue
+        f = min(t.keys)
+        if t.keys[f].keyframe and all(_key_outside(k) for g, k in t.keys.items() if g != f):
+            cands.setdefault(f, []).append(t)
     drop = []
     for sh in sent:
         pool = cands.get(sh.key.frame)

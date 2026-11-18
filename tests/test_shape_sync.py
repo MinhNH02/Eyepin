@@ -58,18 +58,25 @@ def server_shapes_json(s, edit=None, drop=None):
 
 
 def video_with_shapes(s):
-    """Bản xuất "CVAT for video": track mắt (như test_cvatsync.server_video_xml) cộng mỗi shape thành một track một frame như CVAT
-    (`ShapeManager.to_tracks`: keyframe ở frame của shape, rồi keyframe Outside ở frame kế)."""
+    """Bản xuất "CVAT for video": track mắt (như test_cvatsync.server_video_xml) cộng mỗi shape thành một track một frame, đúng như CVAT 2.75
+    xuất (design/cvat-api-notes.md, "Shape mắt (2026-11-18)", câu 5): `<skeleton>` ở frame của shape, rồi `<skeleton>` ở frame kế với cả
+    8 `<points outside="1">`; thẻ `<skeleton>` KHÔNG có thuộc tính `outside`. Shape ở frame cuối của job chỉ có một `<skeleton>`."""
     nums = s.source.frame_numbers
     extra = []
     for k, sh in enumerate(s.build_shapes()):
         f = nums[sh.key.frame]
-        pts = "".join(f'<points label="{i}" keyframe="1" outside="{int(sh.key.points[i].outside)}" occluded="{int(sh.key.points[i].occluded)}" '
-                      f'points="{sh.key.points[i].xy[0]:.2f},{sh.key.points[i].xy[1]:.2f}"/>' for i in EYES[sh.label].ids)
-        extra.append(f'<track id="{500 + k}" label="{sh.label}" source="file">'
-                     f'<skeleton frame="{f}" keyframe="1" outside="0" occluded="0">{pts}</skeleton>'
-                     f'<skeleton frame="{f + 1}" keyframe="1" outside="1" occluded="0">{pts}</skeleton></track>')
+        sk = [f'<skeleton frame="{f}" keyframe="1" z_order="0">{shape_points(sh.key, sh.label)}</skeleton>']
+        if f != nums[-1]:
+            sk.append(f'<skeleton frame="{f + 1}" keyframe="1" z_order="0">{shape_points(sh.key, sh.label, all_outside=True)}</skeleton>')
+        extra.append(f'<track id="{500 + k}" label="{sh.label}" source="file">{"".join(sk)}</track>')
     return server_video_xml(s, job_numbers=nums).replace(b"</annotations>", "".join(extra).encode() + b"</annotations>")
+
+
+def shape_points(key, label, all_outside=False):
+    """8 thẻ `<points>` của một shape như CVAT xuất; `all_outside`: frame kế của track sinh từ shape (mọi điểm Outside, giữ toạ độ)."""
+    return "".join(f'<points label="{i}" keyframe="1" outside="{int(all_outside or key.points[i].outside)}" '
+                   f'occluded="{int(key.points[i].occluded)}" points="{key.points[i].xy[0]:.2f},{key.points[i].xy[1]:.2f}"></points>'
+                   for i in EYES[label].ids)
 
 
 def eye_skeletons_in_images(job):
@@ -163,6 +170,15 @@ class TestShapeSend(Sync):
         self.assertFalse(res.ok)
         self.assertTrue(any("frame 3" in m and "điểm 16" in m and "cờ occluded" in m for m in res.mismatches), res.mismatches)
 
+    def test_shape_on_the_last_frame(self):
+        job = self.setup_job()
+        s = self.session
+        shape_at(s, 2)
+        shape_at(s, s.n_frames - 1)                                          # CVAT xuất track một <skeleton>, không có frame kế
+        self.serve_after_import(job, s)
+        res = cvatsync.send(s, self.cl, cvatsync.prepare(s, self.cl))
+        self.assertTrue(res.ok, (res.message, res.mismatches))
+
     def test_job_frame_numbers_differ_from_indices(self):
         job = self.serve(start_frame=10, n_frames=5)
         s = open_job(self.cl, 7)
@@ -207,9 +223,14 @@ class TestCompareDropsShapeTracks(unittest.TestCase):
                      for g in range(f, self.N))
         return f'<track id="1" label="mattrai" source="manual">{sk}</track>'
 
-    def shape_track(self, f):
-        return (f'<track id="2" label="mattrai" source="file"><skeleton frame="{f}" keyframe="1" outside="0" occluded="0">{self.pts(self.DX)}'
-                f'</skeleton><skeleton frame="{f + 1}" keyframe="1" outside="1" occluded="0">{self.pts(self.DX)}</skeleton></track>')
+    def shape_track(self, f, dx=None, tid=2):
+        """Track CVAT 2.75 sinh từ shape (design/cvat-api-notes.md câu 5): frame f, rồi frame f+1 có cả 8 điểm Outside mà thẻ <skeleton>
+        không có `outside`; shape ở frame cuối chỉ có frame f."""
+        key = EyeKey(f, {i: PointState((10.0 + i + (self.DX if dx is None else dx), 20.0 + i)) for i in EYES["mattrai"].ids})
+        sk = f'<skeleton frame="{f}" keyframe="1" z_order="0">{shape_points(key, "mattrai")}</skeleton>'
+        if f < self.N - 1:
+            sk += f'<skeleton frame="{f + 1}" keyframe="1" z_order="0">{shape_points(key, "mattrai", all_outside=True)}</skeleton>'
+        return f'<track id="{tid}" label="mattrai" source="file">{sk}</track>'
 
     def want(self, f):
         key = EyeKey(f, {i: PointState((10.0 + i, 20.0 + i)) for i in EYES["mattrai"].ids})
@@ -243,6 +264,25 @@ class TestCompareDropsShapeTracks(unittest.TestCase):
         last = self.N - 1
         out = self.compare(self.real_track(last) + self.shape_track(last), {"mattrai": [], "matphai": []}, self.shapes(last))
         self.assertEqual(out, ["mattrai: tool gửi 0 track, CVAT có 1 track"])
+
+    def test_shape_tracks_alone_are_all_dropped(self):
+        for f in (3, self.N - 1):                                            # dưới frame cuối (có frame f+1 toàn điểm Outside) và frame cuối
+            with self.subTest(frame=f):
+                self.assertEqual(self.compare(self.shape_track(f), {"mattrai": [], "matphai": []}, self.shapes(f)), [])
+
+    def test_shape_with_all_points_outside_is_dropped(self):
+        key = EyeKey(3, {i: PointState((10.0 + i, 20.0 + i), outside=True) for i in EYES["mattrai"].ids})
+        sk = (f'<skeleton frame="3" keyframe="1" z_order="0">{shape_points(key, "mattrai")}</skeleton>'
+              f'<skeleton frame="4" keyframe="1" z_order="0">{shape_points(key, "mattrai", all_outside=True)}</skeleton>')
+        out = self.compare(f'<track id="2" label="mattrai" source="file">{sk}</track>', {"mattrai": [], "matphai": []},
+                           {"mattrai": [EyeShape("mattrai", key, {"id": "19"})], "matphai": []})
+        self.assertEqual(out, [])
+
+    def test_two_shapes_on_one_frame_and_a_real_track(self):
+        sent = self.shapes(3)
+        sent["mattrai"].append(EyeShape("mattrai", EyeKey(3, {i: PointState((60.0 + i, 20.0 + i)) for i in EYES["mattrai"].ids}), {"id": "28"}))
+        tracks = self.real_track(3) + self.shape_track(3) + self.shape_track(3, dx=50, tid=3)
+        self.assertEqual(self.compare(tracks, self.want(3), sent), [])
 
     def test_single_keyframe_track_without_a_shape_is_not_dropped(self):
         out = self.compare(self.shape_track(2), {"mattrai": [], "matphai": []}, self.shapes(5))
