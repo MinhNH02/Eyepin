@@ -156,26 +156,7 @@ def write_text(wd, name, images):
     return p
 
 
-def all_outside(k):
-    """Bản xuất video của CVAT không ghi `outside` trên thẻ <skeleton>: skeleton "Outside" là khi cả 8 điểm Outside."""
-    return k.outside or all(p.outside for p in k.points.values())
-
-
-def proposed_shape_tracks(tracks, sent):
-    """`cvatsync._shape_tracks` sau khi sửa: nhận Outside bằng `all_outside` (cả 8 điểm), không dùng `EyeKey.outside` của thẻ skeleton."""
-    cands = {}
-    for t in tracks:
-        real = [f for f, k in t.keys.items() if not all_outside(k)]
-        if len(real) == 1 and t.keys[real[0]].keyframe:
-            cands.setdefault(real[0], []).append(t)
-    drop = []
-    for sh in sent:
-        pool = cands.get(sh.key.frame)
-        if pool:
-            best = min(pool, key=lambda t: cvatsync._key_dist(sh.key, t.keys[sh.key.frame]))
-            pool.remove(best)
-            drop.append(best)
-    return drop
+all_outside = cvatsync._key_outside      # bản xuất video không ghi `outside` trên thẻ <skeleton>: "Outside" = cờ thẻ hoặc cả 8 điểm Outside
 
 
 def shape_frames(aj, label_ids):
@@ -243,9 +224,6 @@ def main():
                 all(len(shape_like[l]) == 1 for l in EYES) and len(vp.tracks["mattrai"]) == 1,
                 f"mattrai: {[(f, k.outside, k.keyframe) for f, k in sorted(mine[0].keys.items())]}; "
                 f"_shape_tracks nhận {[len(v) for v in shape_like.values()]} track")
-        prop = {l: proposed_shape_tracks(vp.tracks[l], [s for s in sent if s.label == l]) for l in EYES}
-        verdict("giả định 2 sau khi sửa (all_outside)", all(len(prop[l]) == 1 for l in EYES),
-                f"proposed_shape_tracks nhận {[len(v) for v in prop.values()]} track")
         print(f"  (EyeKey.outside của track sinh từ shape ở frame kế = {mine[0].keys[4].outside}; "
               f"điểm Outside = {sum(p.outside for p in mine[0].keys[4].points.values())}/8)")
         clear(wd)
@@ -322,17 +300,11 @@ def main():
                   f"{nonout[0]}..{nonout[-1]} ({len(nonout)} frame); Outside ở {outs[:3]}{'...' if len(outs) > 3 else ''}")
         drop = cvatsync._shape_tracks(vp.tracks["mattrai"], shapes5)
         print(f"  _shape_tracks nhận {len(drop)} track là sinh từ shape, ở frame "
-              f"{sorted(min(f for f, k in t.keys.items() if not k.outside) for t in drop)}")
+              f"{sorted(min(f for f, k in t.keys.items() if not all_outside(k)) for t in drop)}")
         remain = [t for t in vp.tracks["mattrai"] if all(t is not d for d in drop)]
         verdict("giả định 2 (hỗn hợp track + 2 shape)",
                 len(drop) == 2 and len(remain) == 1 and sorted(remain[0].keys)[0] == 0 and sorted(f for f, k in remain[0].keys.items() if k.keyframe) == [0, 20],
                 f"{len(vp.tracks['mattrai'])} track trong bản xuất, bỏ {len(drop)} track sinh từ shape, còn {len(remain)} track thật")
-        drop2 = proposed_shape_tracks(vp.tracks["mattrai"], shapes5)
-        remain2 = [t for t in vp.tracks["mattrai"] if all(t is not d for d in drop2)]
-        verdict("giả định 2 hỗn hợp sau khi sửa (all_outside)",
-                len(drop2) == 2 and len(remain2) == 1 and sorted(f for f, k in remain2[0].keys.items() if k.keyframe) == [0, 20],
-                f"bỏ {len(drop2)} track sinh từ shape (frame {sorted(min(f for f, k in t.keys.items() if not all_outside(k)) for t in drop2)}), "
-                f"còn {len(remain2)} track thật")
         # chạy cả phép đối chiếu của cvatsync trên dữ liệu thật
         msgs = cvatsync._compare_shapes(aj, labels, {"mattrai": shapes5, "matphai": []}, set(), list(range(info["start"], info["stop"] + 1)))
         verdict("_compare_shapes trên JSON thật", msgs == [], f"{msgs or 'không lệch'}")
@@ -350,8 +322,8 @@ def main():
             fr = [(int(s.get("frame")), s.find("points").get("outside")) for s in t.findall("skeleton")]
             print(f"  track mattrai: skeleton (frame, outside của điểm đầu) = {fr}")
         vp6 = cvatxml.parse(os.path.join(wd, "video_last", "annotations.xml"))
-        drop6 = proposed_shape_tracks(vp6.tracks["mattrai"], last_shape)
-        verdict("shape ở frame cuối, proposed_shape_tracks", len(drop6) == 1, f"nhận {len(drop6)} track")
+        drop6 = cvatsync._shape_tracks(vp6.tracks["mattrai"], last_shape)
+        verdict("shape ở frame cuối, _shape_tracks", len(drop6) == 1, f"nhận {len(drop6)} track")
         print("  Bước 3 (giao diện web): script không điều khiển trình duyệt; xem ghi chú trong design/cvat-api-notes.md (nút thẻ shape đã kiểm tay qua Chrome; phím N chưa kiểm).")
     finally:
         clear(wd, " (finally)")
