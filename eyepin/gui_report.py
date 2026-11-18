@@ -7,16 +7,21 @@ Tk: kết quả đi qua hàng đợi, luồng chính lấy bằng `root.after`. 
 sau khi màn đã đóng, bị bỏ. Lấy lỗi thì bảng để trống (không ai xuất nhầm dữ liệu cũ).
 
 Mọi thứ hiện trên màn nằm trong `self._report_ui` (dict rỗng khi màn đóng); dữ liệu hiện ra luôn suy từ `ui["report"]`, không từ ô chọn task.
+File Excel cũng ghi từ `ui["report"]` và đúng bộ lọc đang đặt. Việc đăng nhập: 401 lúc lấy mở lại hộp đăng nhập của `CvatMixin` rồi tự lấy lại (không
+giành chỗ của việc khác đang chờ đăng nhập, `_cvat_after_login`); đổi tài khoản thì `cvat_login` gọi `_report_reset` để màn không hiện dữ liệu của người
+trước. Mọi đường lấy vẫn chỉ đi qua `_report_fetch` và `_report_done`.
 """
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import tkinter as tk
 import traceback
-from tkinter import ttk
+import webbrowser
+from tkinter import filedialog, ttk
 
-from . import issuereport
+from . import issuereport, issuexlsx
 from .cvatapi import CvatError, LoginNeeded
 from .issuereport import Row
 
@@ -24,6 +29,9 @@ REPORT_TITLE = "Báo cáo issue CVAT"
 FILTER_ALL = "Tất cả"                                 # cùng chữ với issuexlsx.ALL
 STATUS_CHOICES = {FILTER_ALL: None, issuereport.STATUS_OPEN: False, issuereport.STATUS_RESOLVED: True}   # ô Trạng thái -> `resolved` của `select`
 NOT_LOGGED_IN = "CVAT báo chưa đăng nhập hoặc phiên đăng nhập đã hết hạn. Hãy đăng nhập lại."
+LOGIN_EXPIRED = "Phiên đăng nhập CVAT đã hết hạn. Hãy đăng nhập lại; báo cáo sẽ tự lấy lại."
+LOGIN_PENDING = "Hãy đăng nhập lại (menu Mở từ CVAT…) rồi bấm Làm mới."      # đã có việc khác chờ đăng nhập: không giành chỗ của nó
+LOGIN_FIRST = "Hãy đăng nhập CVAT (menu Mở từ CVAT…) rồi mở lại Báo cáo issue."
 MESSAGE_CHARS = 120                                   # dòng đầu của mô tả dài hơn ngần này ký tự thì cắt
 POLL_MS = 40
 
@@ -96,13 +104,41 @@ class ReportMixin:
         self._report_seq = 0                          # số thứ tự lần lấy; chỉ tăng, không bao giờ đặt lại
 
     def show_issue_report(self, task_id: int | None = None) -> None:
-        """Mở cửa sổ (đã mở thì đưa lên trước, không đổi gì) và lấy issue của `task_id`; None thì chỉ lấy danh sách task."""
-        d, new = self._toplevel("issue_report", REPORT_TITLE)
-        if not new:
+        """Mở cửa sổ và lấy issue của `task_id`; None thì lấy task mặc định (`_report_default_task`), không có thì chỉ lấy danh sách task.
+        Cửa sổ đã mở thì chỉ đưa lên trước: không lấy lại, không đổi các ô đã bỏ tick, không tính task mặc định (tính thì bấm menu lần nữa có thể đổi
+        task). Chỉ khi `task_id` khác None và khác task đang chọn thì đổi sang task đó. Chưa đăng nhập thì cửa sổ không mở (`_report_need_login`)."""
+        if self._report_alive():
+            self._toplevel("issue_report", REPORT_TITLE)
+            if task_id is not None and task_id != self._report_ui["task_id"]:
+                self._report_switch_task(task_id)
             return
+        cl = self.cvat_client
+        if cl is None or cl.token is None:
+            self._report_need_login(task_id)
+            return
+        d, _ = self._toplevel("issue_report", REPORT_TITLE)
         self._report_build(d)
-        self._report_ui["task_id"] = task_id
+        self._report_ui["task_id"] = task_id if task_id is not None else self._report_default_task()
         self._report_fetch()
+
+    def _report_default_task(self) -> int | None:
+        """Task của job CVAT đang mở; không có thì task đang chọn trong hộp "Mở từ CVAT…"; không có nữa thì None."""
+        s = self.s
+        if s is not None and s.cvat is not None:
+            return s.source.job.get("task_id")
+        return self._cvat_selected_task()
+
+    def _report_need_login(self, task_id: int | None) -> None:
+        """Chưa đăng nhập: mở hộp đăng nhập sẵn có và tự mở báo cáo sau khi đăng nhập xong. Đã có việc khác chờ đăng nhập (hoặc đang bận) thì không
+        giành chỗ của nó, chỉ báo người dùng."""
+        if self._cvat_after_login is None and not self.busy:
+            self._login_again(lambda: self.show_issue_report(task_id))
+            return
+        self.notice = LOGIN_FIRST
+        if self.s is None:
+            self.status.set(self.notice)
+        else:
+            self.refresh(light=True)
 
     def _report_build(self, d: tk.Toplevel) -> None:
         d.geometry("1120x560")
@@ -123,7 +159,7 @@ class ReportMixin:
         ui["owner_cb"].pack(side="left", padx=(6, 0))
         for cb in (status_cb, ui["owner_cb"]):
             cb.bind("<<ComboboxSelected>>", lambda e: self._report_fill())
-        ui["export_btn"] = ttk.Button(bar, text="Xuất Excel…")             # lệnh của nút nối ở phần xuất file
+        ui["export_btn"] = ttk.Button(bar, text="Xuất Excel…", command=self.report_export)
         ui["export_btn"].pack(side="right")
         ui["refresh_btn"] = ttk.Button(bar, text="Làm mới", command=self.report_refresh)
         ui["refresh_btn"].pack(side="right", padx=(0, 8))
@@ -142,6 +178,7 @@ class ReportMixin:
         ui["rows_tv"] = _table(right, (("job", "Job", 60, "center", False), ("frame", "Frame", 60, "center", False),
                                        ("message", "Mô tả lỗi", 260, "w", True), ("status", "Trạng thái", 80, "w", False),
                                        ("owner", "Người báo", 100, "w", False), ("created", "Ngày báo", 100, "w", False)), selectmode="browse")
+        ui["rows_tv"].bind("<Double-Button-1>", self._report_double_click)
         self._report_ui = ui
         self._report_controls()
         d.bind("<Destroy>", lambda e: self._report_closed() if e.widget is d else None)
@@ -214,7 +251,9 @@ class ReportMixin:
         ui["loading"] = False
         if err is not None:
             ui["report"] = None
-            if isinstance(err, CvatError):
+            if isinstance(err, LoginNeeded):
+                self._report_login_lost()
+            elif isinstance(err, CvatError):
                 ui["status"].set(str(err))
             else:
                 traceback.print_exception(type(err), err, err.__traceback__)
@@ -237,6 +276,15 @@ class ReportMixin:
                 ui["status"].set("Không còn thấy task #%d trên CVAT." % ui["task_id"] if ui["task_id"] is not None else "Chọn một task để xem issue.")
         self._report_fill()
 
+    def _report_login_lost(self) -> None:
+        """Lúc lấy mà CVAT trả 401 (hoặc thiếu khoá): mở lại hộp đăng nhập và tự lấy lại sau khi đăng nhập. Đã có việc khác chờ đăng nhập (hoặc đang bận)
+        thì KHÔNG đụng vào việc chờ đó, chỉ dặn người dùng tự đăng nhập rồi bấm Làm mới."""
+        if self._cvat_after_login is None and not self.busy:
+            self._report_ui["status"].set(LOGIN_EXPIRED)
+            self._login_again(self.report_refresh)
+        else:
+            self._report_ui["status"].set(LOGIN_PENDING)
+
     # ---------- thao tác của người dùng ----------
     def report_pick_task(self) -> None:
         """Ô chọn task đổi: task khác thì xoá bảng ngay rồi lấy task mới; vẫn task đó thì như Làm mới (giữ job đã bỏ tick)."""
@@ -249,13 +297,32 @@ class ReportMixin:
         if tasks[i]["id"] == ui["task_id"]:
             self.report_refresh()
             return
-        ui["task_id"], ui["report"], ui["excluded"] = tasks[i]["id"], None, set()
+        self._report_switch_task(tasks[i]["id"])
+
+    def _report_switch_task(self, task_id: int) -> None:
+        """Đổi sang task khác: xoá bảng và các ô đã bỏ tick ngay (chúng thuộc task cũ), rồi lấy task mới."""
+        ui = self._report_ui
+        ui["task_id"], ui["report"], ui["excluded"] = task_id, None, set()
+        ids = [t["id"] for t in ui["tasks"]]
+        if task_id in ids:
+            ui["task_cb"].current(ids.index(task_id))
         self._report_fill()
         self._report_fetch()
 
     def report_refresh(self) -> None:
         if self._report_alive():
             self._report_fetch()
+
+    def _report_reset(self, text: str) -> None:
+        """Bỏ dữ liệu đang hiện (đổi tài khoản: nó là của người khác) và ghi `text` lên dòng trạng thái. Lần lấy đang bay bị bỏ kết quả. GIỮ task
+        đang chọn và các job đã bỏ tick, để Làm mới lấy lại đúng task đó. Màn đóng thì không làm gì."""
+        if not self._report_alive():
+            return
+        ui = self._report_ui
+        self._report_seq += 1
+        ui["loading"], ui["report"] = False, None
+        self._report_fill()
+        ui["status"].set(text)
 
     def report_toggle_job(self, job_id: int) -> None:
         ui = self._report_ui
@@ -309,3 +376,69 @@ class ReportMixin:
         for w in (ui["task_cb"], ui["refresh_btn"]):
             w.state(["disabled" if loading else "!disabled"])
         ui["export_btn"].state(["disabled" if loading or not self.report_rows() else "!disabled"])
+
+    # ---------- xuất Excel và mở link ----------
+    def ask_report_path(self, initialdir: str, initialfile: str) -> str:
+        """Hộp chọn nơi lưu file Excel (thay được trong test). Người dùng huỷ thì trả chuỗi rỗng (hoặc tuple rỗng)."""
+        return filedialog.asksaveasfilename(title="Xuất báo cáo issue", defaultextension=".xlsx", filetypes=[("Excel", "*.xlsx")],
+                                            initialdir=initialdir, initialfile=initialfile, parent=self._dialogs.get("issue_report") or self.root)
+
+    def open_link(self, url: str) -> None:
+        """Mở `url` bằng trình duyệt mặc định (thay được trong test)."""
+        webbrowser.open(url)
+
+    def _report_dir(self) -> str:
+        """Thư mục gợi ý cho hộp lưu: thư mục lần xuất trước nếu còn; không thì Documents; không thì thư mục nhà (không bao giờ là thư mục chương trình)."""
+        saved = self.settings["workspace"].get("report_dir") or ""
+        if saved and os.path.isdir(saved):
+            return saved
+        home = os.path.expanduser("~")
+        docs = os.path.join(home, "Documents")
+        return docs if os.path.isdir(docs) else home
+
+    def report_export(self) -> None:
+        """Ghi các dòng đang hiện ra file Excel. Mọi thông tin task, tài khoản, giờ lấy lấy từ dữ liệu đã tải (`ui["report"]`), không từ ô chọn task:
+        ô chọn có thể đã đổi mà chưa lấy. Kết quả và lỗi hiện trên dòng trạng thái của màn."""
+        ui = self._report_ui
+        if not ui or ui["loading"] or ui["report"] is None:
+            return
+        rows = self.report_rows()
+        if not rows:
+            ui["status"].set("Không có issue nào để xuất.")
+            return
+        report = ui["report"]
+        path = self.ask_report_path(self._report_dir(), issuexlsx.default_name(report))
+        if not path:                                      # người dùng huỷ: hộp trả "" hoặc ()
+            return
+        path = str(path)
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            issuexlsx.write(path, report, rows, excluded=ui["excluded"], resolved=STATUS_CHOICES.get(ui["status_filter"].get()),
+                            owner=self._report_owner())
+        except issuexlsx.MissingOpenpyxl as err:
+            ui["status"].set(str(err))
+        except OSError as err:
+            ui["status"].set("Không ghi được file %s: %s" % (path, err))
+        except Exception as err:                          # lỗi lập trình: để lại dấu vết trên console, người dùng thấy một dòng
+            traceback.print_exception(type(err), err, err.__traceback__)
+            ui["status"].set("Lỗi không mong đợi khi xuất: %s: %s" % (type(err).__name__, err))
+        else:
+            self.settings["workspace"]["report_dir"] = os.path.dirname(os.path.abspath(path))
+            self.save_settings()
+            ui["status"].set("Đã xuất %d issue ra %s." % (len(rows), path))
+
+    def report_open_row(self) -> None:
+        """Mở link của dòng đang chọn (frame đó trong job, trên CVAT) bằng trình duyệt. Không chọn dòng nào thì không làm gì."""
+        ui = self._report_ui
+        selected = ui["rows_tv"].selection() if ui else ()
+        if not selected:
+            return
+        for r in self.report_rows():
+            if str(r.issue_id) == selected[0]:
+                self.open_link(r.link)
+                return
+
+    def _report_double_click(self, event) -> None:
+        if self._report_ui and self._report_ui["rows_tv"].identify_row(event.y):         # đúp lên tiêu đề hay chỗ trống thì không mở gì
+            self.report_open_row()

@@ -607,7 +607,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
             "zoom_in": lambda: self.zoom(self.zoom_step()), "zoom_out": lambda: self.zoom(1 / self.zoom_step()), "fit": self.fit, "toggle_ids": self.toggle_ids,
             "marker_up": lambda: self.resize_markers(1.25), "marker_down": lambda: self.resize_markers(0.8), "swap_top": self.swap_top,
             "image_setups": self.show_image_setups, "grid": self.toggle_grid,
-            "open_cvat": self.open_cvat, "send_cvat": self.send_cvat, "qc_clear": self.qc_clear,
+            "open_cvat": self.open_cvat, "send_cvat": self.send_cvat, "qc_clear": self.qc_clear, "issue_report": self.show_issue_report,
         }
 
     def _bind_keys(self):

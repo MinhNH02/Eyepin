@@ -81,13 +81,14 @@ class CvatMixin:
         self._menu = None
 
     def _cvat_menu_items(self, menu):
-        """Ba mục menu: Mở từ CVAT…, Gửi lên CVAT, Xoá nhãn mắt cũ và gán lại… (hai mục sau bật/tắt theo trạng thái phiên)."""
+        """Bốn mục menu: Mở từ CVAT…, Gửi lên CVAT, Xoá nhãn mắt cũ và gán lại… (hai mục này bật/tắt theo trạng thái phiên), Báo cáo issue CVAT…."""
         self._menu = menu
         menu.add_command(label="Mở từ CVAT…", command=self.open_cvat)
         menu.add_command(label="Gửi lên CVAT", command=self.send_cvat)
         self._cvat_menu["send"] = menu.index("end")
         menu.add_command(label="Xoá nhãn mắt cũ và gán lại…", command=self.qc_clear)
         self._cvat_menu["clear"] = menu.index("end")
+        menu.add_command(label="Báo cáo issue CVAT…", command=self.show_issue_report)      # sau hai mục trên để chỉ số của chúng không đổi
         menu.add_separator()
         menu.add_command(label="Đăng xuất…", command=self.logout)          # LoginMixin (gui_login.py): dọn rồi về màn đăng nhập
         menu.add_command(label="Thoát EyePin", command=lambda: self.on_close())   # như nút X: hỏi lưu/bận rồi đóng, không xoá gì
@@ -337,6 +338,7 @@ class CvatMixin:
         bar.grid(row=6, column=0, columnspan=3, sticky="e", padx=12, pady=(4, 10))
         ui["switch_btn"] = ttk.Button(bar, text="Đổi tài khoản", command=lambda: self._cvat_show_form(True))
         ui["switch_btn"].pack(side="left", padx=4)
+        ttk.Button(bar, text="Báo cáo issue…", command=lambda: self.show_issue_report(self._cvat_selected_task())).pack(side="left", padx=4)
         ttk.Button(bar, text="Mở", command=self.cvat_open_selected).pack(side="left", padx=4)
         ttk.Button(bar, text="Đóng", command=d.destroy).pack(side="left", padx=4)
         d.bind("<Escape>", lambda ev: d.destroy())
@@ -365,6 +367,13 @@ class CvatMixin:
     def _cvat_dialog_alive(self) -> bool:
         d = self._dialogs.get("cvat")
         return bool(self._cvat_ui) and d is not None and d.winfo_exists()
+
+    def _cvat_selected_task(self) -> int | None:
+        """Mã task đang chọn trong hộp "Mở từ CVAT…"; None khi hộp đóng hoặc chưa chọn task nào."""
+        if not self._cvat_dialog_alive():
+            return None
+        sel = self._cvat_ui["tasks_lb"].curselection()
+        return self._cvat_ui["tasks"][sel[0]]["id"] if sel else None
 
     def _client_for(self, url: str) -> CvatClient:
         """Client của địa chỉ này: dùng lại client đang có nếu cùng địa chỉ (phiên đang mở giữ nó để đọc frame, đăng nhập lại thì khoá mới cũng đến đó)."""
@@ -401,6 +410,7 @@ class CvatMixin:
                 return
             ui["password"].set("")                           # mật khẩu không ở lại trong cửa sổ
             self.cvat_client = client
+            self._report_reset("Tài khoản CVAT vừa đổi. Chọn task hoặc bấm Làm mới.")      # màn Báo cáo issue (nếu đang mở) đang hiện dữ liệu của tài khoản trước
             self.settings["cvat"] = {"url": client.url, "user": user}
             self.save_settings()
             self._fill_cvat_tasks(tasks)

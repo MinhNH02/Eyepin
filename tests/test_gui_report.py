@@ -1,16 +1,22 @@
 import gc
 import os
+import shutil
 import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
+
+import openpyxl
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 os.environ["EYEPIN_HOME"] = tempfile.mkdtemp(prefix="eyepin_home_")
 
 from eyepin import issuereport as ir  # noqa: E402
+from eyepin import issuexlsx  # noqa: E402
+from eyepin import shortcuts as sc  # noqa: E402
 from fake_cvat import FakeJob, fake_comment, fake_issue  # noqa: E402
-from test_gui_cvat import CvatGuiCase  # noqa: E402
+from test_gui_cvat import CvatGuiCase, buttons  # noqa: E402
 
 
 class ReportCase(CvatGuiCase):
@@ -268,6 +274,221 @@ class TestRefresh(ReportCase):
         ui["status_filter"].set("Chưa sửa")
         app._report_fill()
         self.assertIn("Không nối được CVAT", ui["status"].get())                     # đổi bộ lọc không xoá lời báo lỗi
+
+
+class TestExport(ReportCase):
+    def out_dir(self):
+        d = tempfile.mkdtemp(prefix="eyepin_out_")
+        self.addCleanup(shutil.rmtree, d, True)
+        return d
+
+    def test_export_writes_the_rows_shown_from_the_loaded_dataset(self):
+        app, ui = self.open_report()
+        out = os.path.join(self.out_dir(), "bc.xlsx")
+        asked = []
+        app.ask_report_path = lambda initialdir, initialfile: asked.append((initialdir, initialfile)) or out
+        ui["status_filter"].set("Chưa sửa")
+        app._report_fill()
+        ui["task_cb"].current(1)                                                     # ô chọn bị đổi nhưng chưa lấy: file vẫn là của task 3
+        app.report_export()
+        wb = openpyxl.load_workbook(out)
+        self.addCleanup(wb.close)
+        self.assertEqual([c.value for c in wb["Issue"]["E"]], ["Mô tả lỗi", "Mí trên mắt trái lệch 3 px"])
+        self.assertEqual(wb["Issue"]["D2"].value, self.srv.url + "/tasks/3/jobs/7?frame=87")
+        info = dict(r[:2] for r in wb["Tổng hợp"].iter_rows(values_only=True) if r[0])
+        self.assertEqual((info["Task"], info["Tài khoản"], info["Bộ lọc"]), ("#3 clip", "minh", "Trạng thái: Chưa sửa; Người báo: Tất cả"))
+        self.assertEqual(ui["status"].get(), "Đã xuất 1 issue ra %s." % out)
+        self.assertRegex(asked[0][1], r"^bao-cao-issue_task-3_\d{8}-\d{4}\.xlsx$")
+        self.assertEqual(app.settings["workspace"]["report_dir"], os.path.dirname(out))
+        app.report_export()
+        self.assertEqual(asked[1][0], os.path.dirname(out))                          # lần sau gợi ý thư mục vừa dùng
+
+    def test_first_export_suggests_documents_or_home_never_the_program_folder(self):
+        app, ui = self.open_report()
+        asked = []
+        app.ask_report_path = lambda initialdir, initialfile: asked.append(initialdir) or ""
+        app.report_export()                                                          # người dùng huỷ
+        docs = os.path.join(os.path.expanduser("~"), "Documents")
+        self.assertEqual(asked[0], docs if os.path.isdir(docs) else os.path.expanduser("~"))
+        self.assertTrue(ui["status"].get().startswith("Đang hiện 2 / 2 issue"))      # huỷ thì không đổi gì
+
+    def test_export_adds_xlsx_extension(self):
+        app, ui = self.open_report()
+        base = os.path.join(self.out_dir(), "bao cao tuan 47")
+        app.ask_report_path = lambda initialdir, initialfile: base
+        app.report_export()
+        self.assertTrue(os.path.isfile(base + ".xlsx"))
+        self.assertFalse(os.path.exists(base))
+
+    def test_export_errors_are_reported_in_the_status_line(self):
+        app, ui = self.open_report()
+        bad = os.path.join(self.out_dir(), "khong-co", "bc.xlsx")
+        app.ask_report_path = lambda initialdir, initialfile: bad
+        app.report_export()
+        self.assertTrue(ui["status"].get().startswith("Không ghi được file %s: " % bad))
+        self.assertEqual(self.ids(app), [2, 1])
+        with mock.patch("eyepin.issuexlsx.write", side_effect=issuexlsx.MissingOpenpyxl("Máy chưa có thư viện openpyxl nên chưa xuất được Excel. Cài bằng lệnh: pip install openpyxl")):
+            app.report_export()
+        self.assertIn("pip install openpyxl", ui["status"].get())
+
+    def test_export_refused_while_loading(self):
+        app, ui = self.open_report()
+        asked = []
+        app.ask_report_path = lambda initialdir, initialfile: asked.append(1) or ""
+        app.report_refresh()
+        self.assertTrue(ui["loading"])
+        app.report_export()
+        self.assertEqual(asked, [])
+        self.wait_report(app)
+
+    def test_nothing_to_export(self):
+        app, ui = self.open_report()
+        app.report_toggle_job(7)
+        app.report_export()
+        self.assertEqual(ui["status"].get(), "Không có issue nào để xuất.")
+
+    def test_double_click_opens_the_frame_link(self):
+        app, ui = self.open_report()
+        links = []
+        app.open_link = links.append
+        app.report_open_row()
+        self.assertEqual(links, [])                                                  # chưa chọn dòng nào
+        ui["rows_tv"].selection_set("1")
+        app.report_open_row()
+        self.assertEqual(links, [self.srv.url + "/tasks/3/jobs/7?frame=87"])
+
+
+class TestEntryPoints(ReportCase):
+    def test_menu_item_and_action(self):
+        self.serve_report()
+        app = self.make_app()
+        self.assertEqual(sc.BY_ID["issue_report"].keys, ())
+        self.assertIn("issue_report", app.handlers)
+        app._menu.index("Báo cáo issue CVAT…")                                       # ném TclError nếu không có mục này
+        self.assertEqual(app._menu.entrycget(app._cvat_menu["send"], "label"), "Gửi lên CVAT")
+        self.assertEqual(app._menu.entrycget(app._cvat_menu["clear"], "label"), "Xoá nhãn mắt cũ và gán lại…")
+
+    def test_button_in_open_dialog_uses_the_selected_task(self):
+        self.serve_report()
+        app = self.make_app()
+        app.cvat_client = self.cl
+        app.open_cvat()
+        self.wait(app)
+        app._cvat_ui["tasks_lb"].selection_set(1)                                    # task #4
+        buttons(app._dialogs["cvat"], "Báo cáo issue…")[0].invoke()
+        self.wait_report(app)
+        self.assertEqual((app._report_ui["task_id"], self.ids(app)), (4, [3]))
+
+    def test_default_task_is_the_task_of_the_open_job(self):
+        self.serve_report()
+        app = self.make_app()
+        app.load_cvat(self.cl, 7)
+        self.wait(app)
+        app.show_issue_report()
+        self.wait_report(app)
+        self.assertEqual(app._report_ui["task_id"], 3)
+
+    def test_reopen_keeps_data_and_unticked_jobs(self):
+        app, ui = self.open_report()
+        app.report_toggle_job(8)
+        calls = self.srv.calls["GET /api/issues"]
+        app.show_issue_report()
+        self.assertFalse(ui["loading"])
+        self.assertEqual((self.srv.calls["GET /api/issues"], ui["excluded"], self.ids(app)), (calls, {8}, [2, 1]))
+        app.show_issue_report(4)                                                     # gọi với task khác thì đổi task
+        self.wait_report(app)
+        self.assertEqual((ui["task_id"], self.ids(app), ui["excluded"]), (4, [3], set()))
+
+    def test_not_logged_in_goes_through_the_login_dialog(self):
+        self.serve_report()
+        app = self.make_app()
+        app.show_issue_report(3)
+        self.assertNotIn("issue_report", app._dialogs)
+        ui = app._cvat_ui
+        ui["url"].set(self.srv.url), ui["user"].set("minh"), ui["password"].set("pw")
+        app.cvat_login()
+        self.wait(app)
+        self.wait_report(app)
+        self.assertEqual(self.ids(app), [2, 1])
+
+    def test_not_logged_in_while_another_relogin_is_pending_only_tells_the_user(self):
+        self.serve_report()
+        app = self.make_app()
+        pending = lambda: None
+        app._cvat_after_login = pending
+        app.show_issue_report(3)
+        self.assertIs(app._cvat_after_login, pending)
+        self.assertNotIn("issue_report", app._dialogs)
+        self.assertEqual(app.notice, "Hãy đăng nhập CVAT (menu Mở từ CVAT…) rồi mở lại Báo cáo issue.")
+
+
+class TestLoginChanges(ReportCase):
+    def test_expired_login_during_fetch_asks_to_log_in_and_refetches(self):
+        app, ui = self.open_report()
+        self.srv.fail_401 = True
+        app.report_refresh()
+        self.wait_report(app)
+        self.assertEqual(self.ids(app), [])
+        self.assertEqual(ui["status"].get(), "Phiên đăng nhập CVAT đã hết hạn. Hãy đăng nhập lại; báo cáo sẽ tự lấy lại.")
+        self.assertFalse(self.off(ui["refresh_btn"]))
+        self.assertIn("cvat", app._dialogs)                                          # hộp đăng nhập sẵn có
+        self.srv.fail_401 = False
+        cv = app._cvat_ui
+        cv["url"].set(self.srv.url), cv["user"].set("minh"), cv["password"].set("pw")
+        app.cvat_login()
+        self.wait(app)
+        self.wait_report(app)
+        self.assertEqual(self.ids(app), [2, 1])
+
+    def test_expired_login_does_not_steal_a_pending_relogin(self):
+        app, ui = self.open_report()
+        pending = lambda: None
+        app._cvat_after_login = pending
+        self.srv.fail_401 = True
+        app.report_refresh()
+        self.wait_report(app)
+        self.assertIs(app._cvat_after_login, pending)
+        self.assertEqual(ui["status"].get(), "Hãy đăng nhập lại (menu Mở từ CVAT…) rồi bấm Làm mới.")
+
+    def test_switching_account_clears_the_report(self):
+        app, ui = self.open_report()
+        app.report_toggle_job(8)
+        app.open_cvat()
+        self.wait(app)
+        cv = app._cvat_ui
+        cv["url"].set(self.srv.url), cv["user"].set("minh"), cv["password"].set("pw")
+        app.cvat_login()
+        self.wait(app)
+        self.assertEqual((self.ids(app), ui["report"], ui["excluded"], ui["task_id"]), ([], None, {8}, 3))
+        self.assertEqual(ui["status"].get(), "Tài khoản CVAT vừa đổi. Chọn task hoặc bấm Làm mới.")
+        self.assertFalse(self.off(ui["refresh_btn"]))
+        self.assertTrue(self.off(ui["export_btn"]))
+        app.report_refresh()
+        self.wait_report(app)
+        self.assertEqual((self.ids(app), ui["excluded"]), ([2, 1], {8}))
+
+    def test_refresh_after_a_failed_relogin_does_not_lock_the_window(self):
+        app, ui = self.open_report()
+        app.open_cvat()
+        self.wait(app)
+        cv = app._cvat_ui
+        cv["url"].set(self.srv.url), cv["user"].set("minh"), cv["password"].set("sai")
+        app.cvat_login()
+        self.wait(app)
+        self.assertIsNone(app.cvat_client.token)                                     # login() bỏ khoá cũ trước khi gửi
+        app.report_refresh()
+        self.assertFalse(ui["loading"])
+        self.assertFalse(self.off(ui["refresh_btn"]))
+        self.assertFalse(self.off(ui["task_cb"]))
+        self.assertEqual(self.ids(app), [])
+        self.assertIn("đăng nhập", ui["status"].get())
+
+    def test_logout_teardown_closes_the_report_window(self):
+        app, ui = self.open_report()
+        d = app._dialogs["issue_report"]
+        app.teardown()
+        self.assertFalse(d.winfo_exists())
+        self.assertEqual(app._report_ui, {})
 
 
 if __name__ == "__main__":
