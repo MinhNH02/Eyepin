@@ -22,7 +22,7 @@ import numpy as np
 
 from . import cvatxml, headturn, qc
 from .frames import DirSource, IMAGE_EXT
-from .cvatxml import Annotations, EyeKey, EyeTrack, PointState
+from .cvatxml import Annotations, EyeKey, EyeShape, EyeTrack, PointState
 from .geometry import (EYES, HIDDEN_ERR_PX, Point, assign_roles, derive, hidden_neighbours, split_eyes,
                        split_seven, validate_four)
 from .scan import Finding, scan
@@ -1078,11 +1078,14 @@ class Session:
     # ---- xuất ----
     def build_tracks(self, tol: float = KEYFRAME_TOL) -> dict[str, EyeTrack]:
         """Track mắt cho file import: mỗi mắt có ít keyframe nhất sao cho nội suy của CVAT lệch không quá `tol`, mỗi keyframe đủ 8 điểm.
-        Mắt đã bị xoá thì không có track; mắt ghim sau thì track bắt đầu từ frame ghim đầu tiên của nó."""
+        Mắt đã bị xoá thì không có track; mắt ghim sau thì track bắt đầu từ frame ghim đầu tiên của nó. Mắt kiểu shape không phải track
+        (xem `build_shapes`); bộ đối tượng chỉ có shape thì trả {}. Không có nhãn nào thì ném ValueError."""
         if not self.labels:
             raise ValueError("Chưa có frame ghim nào")
         tracks = {}
         for label, spec in EYES.items():
+            if self.kind[label] == "shape":
+                continue
             have = [f for f in sorted(self.pins) if all(i in self.pins[f] for i in spec.ids)]
             if not have:
                 continue
@@ -1096,9 +1099,24 @@ class Session:
                 fl = self.flags_at(f)
                 tr.keys[f] = EyeKey(f, {i: PointState(pts[i], fl.get(i) == 'outside', fl.get(i) == 'occluded') for i in spec.ids})
             tracks[label] = tr
-        if not tracks:
-            raise ValueError("Chưa có frame ghim nào")
         return tracks
+
+    def build_shapes(self) -> list[EyeShape]:
+        """Shape mắt của mọi bộ đối tượng cho file import, sắp theo (frame, ID); mỗi shape đủ 8 điểm kèm cờ của chính nó. Không có thì []."""
+        saved, out = self.cur, []
+        try:
+            for i in range(len(self.layers)):
+                self.cur = i
+                for label, spec in EYES.items():
+                    if self.kind[label] != "shape":
+                        continue
+                    for f in self._shape_frames(label):
+                        pts, fl = self.pins[f], self.flags_at(f)
+                        key = EyeKey(f, {j: PointState(pts[j], fl.get(j) == 'outside', fl.get(j) == 'occluded') for j in spec.ids})
+                        out.append(EyeShape(label, key, {"id": str(self.shape_ids[label][f])}))
+        finally:
+            self.cur = saved
+        return sorted(out, key=lambda sh: (sh.key.frame, int(sh.attrs["id"])))
 
     def build_all_tracks(self, tol: float = KEYFRAME_TOL) -> list[EyeTrack]:
         """Track của mọi bộ đối tượng (một label có thể có nhiều track), sắp theo ID."""
@@ -1115,7 +1133,16 @@ class Session:
         return sorted(out, key=lambda t: int(t.attrs.get("id", 10 ** 9)))
 
     def export(self, out_path: str, tol: float = KEYFRAME_TOL) -> dict:
-        tracks = self.build_all_tracks(tol)
-        cvatxml.write_eyes(self.ann, out_path, new_tracks=tracks)
+        """Ghi file import có cả track lẫn shape mắt. Không có cả hai thì ném ValueError("Chưa có frame ghim nào")."""
+        try:
+            tracks = self.build_all_tracks(tol)
+        except ValueError:
+            tracks = []
+        shapes = self.build_shapes()
+        if not tracks and not shapes:
+            raise ValueError("Chưa có frame ghim nào")
+        cvatxml.write_eyes(self.ann, out_path, new_tracks=tracks, new_shapes=shapes,
+                           frame_names=self.names, size=(self.width, self.height))
         first = min(f for L in self.layers for f in L.pins)
-        return {"keyframes": sum(len(t.keys) for t in tracks), "frames": self.n_frames - first, "path": out_path, "tracks": sorted(t.label for t in tracks)}
+        return {"keyframes": sum(len(t.keys) for t in tracks), "frames": self.n_frames - first, "path": out_path,
+                "tracks": sorted(t.label for t in tracks), "shapes": len(shapes)}

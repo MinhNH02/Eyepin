@@ -8,12 +8,13 @@ import shutil
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 
 import cv2
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from eyepin import evaluate  # noqa: E402
+from eyepin import cvatxml, evaluate  # noqa: E402
 from eyepin.geometry import EYES  # noqa: E402
 from eyepin.session import Session  # noqa: E402
 import test_tracking as T  # noqa: E402
@@ -298,6 +299,84 @@ class ShapeSessionTests(unittest.TestCase):
         s.estimates[3] = {22: "x"}
         s.delete_shape("mattrai", 3)
         self.assertNotIn(3, s.pins); self.assertNotIn(3, s.flags); self.assertNotIn(3, s.estimates)
+
+    # ---- xuất file có shape (Task 5) ----
+    def out_path(self, name: str) -> str:
+        p = os.path.join(self.dir, name)
+        self.addCleanup(lambda: os.path.exists(p) and os.remove(p))
+        return p
+
+    def test_export_shape_only_job(self):
+        s = self.shapes_at(3, 5)
+        s.toggle_flag(5, 16, "occluded")
+        out = self.out_path("shape_only.xml")
+        info = s.export(out)
+        self.assertEqual(info["shapes"], 2)
+        self.assertEqual(info["keyframes"], 0)
+        self.assertEqual(info["tracks"], [])
+        ann = cvatxml.parse(out)
+        self.assertEqual(ann.tracks["mattrai"], [])
+        self.assertEqual(set(ann.shapes["mattrai"]), {3, 5})
+        for f in (3, 5):
+            for i, ps in ann.shapes["mattrai"][f].points.items():
+                want = s.labels[f].points[i]
+                self.assertLess(abs(ps.xy[0] - want[0]), 0.01)
+                self.assertLess(abs(ps.xy[1] - want[1]), 0.01)
+        self.assertTrue(ann.shapes["mattrai"][5].points[16].occluded)
+        self.assertFalse(ann.shapes["mattrai"][3].points[16].occluded)
+        self.assertEqual([sh.key.frame for sh in s.build_shapes()], [3, 5])
+        self.assertEqual([sh.attrs for sh in s.build_shapes()], [{"id": "1"}, {"id": "10"}])
+
+    def test_export_mixed_track_and_shape(self):
+        s = Session(self.dir)
+        s.pin_eye(0, "matphai", four("matphai", 0), kind="track")
+        s.pin_eye(3, "mattrai", four("mattrai", 3), kind="shape")
+        out = self.out_path("mixed.xml")
+        info = s.export(out)
+        self.assertEqual(info["tracks"], ["matphai"])
+        self.assertEqual(info["shapes"], 1)
+        root = ET.parse(out).getroot()
+        self.assertEqual([t.get("label") for t in root.findall("track")], ["matphai"])
+        image = [im for im in root.findall("image") if im.get("id") == "3"]
+        self.assertEqual(len(image), 1)
+        self.assertEqual([sk.get("label") for sk in image[0].findall("skeleton")], ["mattrai"])
+        only = Session(self.dir)
+        only.pin_eye(0, "matphai", four("matphai", 0), kind="track")
+        out2 = self.out_path("track_only.xml")
+        only.export(out2)
+        mine, ref = cvatxml.parse(out), cvatxml.parse(out2)
+        self.assertEqual(len(mine.tracks["matphai"]), 1)
+        self.assertEqual(mine.tracks["matphai"][0].keys, ref.tracks["matphai"][0].keys)
+        self.assertEqual(sorted(s.build_tracks()), ["matphai"])
+
+    def test_export_two_people_same_frame(self):             # điểm soi 3
+        s = Session(self.dir)
+        s.pin_eye(3, "mattrai", four("mattrai", 3), kind="shape")
+        s.add_layer()
+        s.pin_eye(3, "mattrai", four("mattrai", 3), kind="shape")
+        out = self.out_path("two_people.xml")
+        info = s.export(out)
+        self.assertEqual(info["shapes"], 2)
+        image = [im for im in ET.parse(out).getroot().findall("image") if im.get("id") == "3"]
+        self.assertEqual(len(image), 1)
+        self.assertEqual([sk.get("label") for sk in image[0].findall("skeleton")], ["mattrai", "mattrai"])
+        self.assertEqual([sh.attrs["id"] for sh in s.build_shapes()], ["1", "10"])
+
+    def test_export_nothing_still_raises(self):
+        s = Session(self.dir)
+        self.assertEqual(s.build_shapes(), [])
+        with self.assertRaises(ValueError):
+            s.export(self.out_path("nothing.xml"))
+        with self.assertRaises(ValueError):
+            s.build_tracks()
+        with self.assertRaises(ValueError):
+            s.build_all_tracks()
+
+    def test_build_tracks_skips_shape_eyes(self):
+        s = self.shapes_at(3, 5)
+        self.assertEqual(s.build_tracks(), {})
+        with self.assertRaises(ValueError):
+            s.build_all_tracks()
 
 
 if __name__ == "__main__":
