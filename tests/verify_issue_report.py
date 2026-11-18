@@ -12,7 +12,7 @@ Quy trình: gửi một đoạn mã Python qua stdin cho `manage.py shell` trong
   V5  số issue CVAT đếm sẵn của job khớp, báo cáo không cảnh báo job này
   V6  file Excel: mô tả bắt đầu bằng `=` là chuỗi chữ, link có siêu liên kết đúng, sheet "Tổng hợp" có dòng của job
   V7  (thông tin) bẫy `task_id` của /api/comments còn nguyên hay không
-  V8  sau khi chạy, job có đúng các issue ban đầu và không còn bình luận nào chứa EYEPIN-VERIFY
+  V8  sau khi chạy, job có đúng các issue ban đầu và không còn bình luận nào chứa EYEPIN-VERIFY (luôn in, kể cả khi phép kiểm V1-V6 gặp lỗi)
 
 AN TOÀN: chỉ xoá đúng các issue script vừa tạo (danh sách `created` khai báo trước `try`, xoá trong `finally` kể cả khi lỗi giữa chừng); không
 đụng gì khác. Tên tài khoản CVAT local là địa chỉ email riêng tư: script không in phản hồi thô, tên đăng nhập hay email, chỉ in dòng kết luận và số đếm.
@@ -84,7 +84,7 @@ def need(method, path, want, data=None):
     return body
 
 
-created, names, existing, error = [], {}, [], None
+created, names, existing, error = [], {}, None, None      # existing: danh sách issue ban đầu của job; None nếu chưa đọc được
 try:
     client.force_login(get_user_model().objects.order_by("id").first(), backend="django.contrib.auth.backends.ModelBackend")
     task_id = need("get", "/api/jobs/%d" % JOB, 200)["task_id"]
@@ -124,7 +124,7 @@ finally:
                 undeleted.append(iid)
         except Exception:
             undeleted.append(iid)
-    left = {"undeleted": undeleted}
+    left = {"undeleted": undeleted, "existing": existing}      # danh sách ban đầu đi cùng kết quả dọn dẹp: V8 luôn có gì để so, kể cả khi không có EYEPIN_JSON
     try:
         left["issues"] = sorted(i["id"] for i in need("get", "/api/issues?job_id=%d&page_size=all" % JOB, 200)["results"])
         left["comments"] = sum(1 for c in need("get", "/api/comments?page_size=all", 200)["results"] if MARK in (c.get("message") or ""))
@@ -135,11 +135,12 @@ finally:
         print("EYEPIN_ERROR " + error)
 '''
 
-results = []
+results, printed = [], set()
 
 
 def verdict(code, ok, text):
     results.append(ok)
+    printed.add(code)
     print("%s  %s  %s" % (code, "ĐẠT" if ok else "LỆCH", text))
 
 
@@ -206,11 +207,20 @@ def main():
         print("Lỗi trong container: %s" % found["EYEPIN_ERROR"])
     data = json.loads(found["EYEPIN_JSON"]) if "EYEPIN_JSON" in found else None
     if data is not None:
-        check_data(data)
+        try:
+            check_data(data)
+        except Exception as exc:                   # chỉ in tên lớp lỗi (nội dung có thể kèm dữ liệu CVAT); V8 vẫn phải có kết luận
+            name = type(exc).__name__
+            missing = [code for code in ("V1", "V2", "V3", "V4", "V5", "V6") if code not in printed]
+            for code in missing:
+                verdict(code, False, "không kiểm được: phép kiểm ném %s" % name)
+            if not missing:
+                results.append(False)
+                print("Lỗi trong phép kiểm dữ liệu: %s" % name)
     else:
         results.append(False)
     left = json.loads(found["EYEPIN_LEFT"]) if "EYEPIN_LEFT" in found else {}
-    existing = data["existing"] if data is not None else None
+    existing = left.get("existing")
     clean = (not left.get("error") and not left.get("undeleted") and left.get("comments") == 0
              and (existing is None or left.get("issues") == existing))
     detail = "issue còn lại của job: %s, bình luận còn chứa %s: %s, issue chưa xoá được: %s" % (

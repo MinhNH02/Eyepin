@@ -67,7 +67,11 @@ class TestReading(IssueApiCase):
                   "còn trang sau": lambda d: dict(d, next="http://127.0.0.1:1/api/issues?page=2"),
                   "thiếu results": lambda d: {k: v for k, v in d.items() if k != "results"},
                   "thiếu count": lambda d: {k: v for k, v in d.items() if k != "count"},
-                  "id trùng": lambda d: dict(d, results=d["results"] + d["results"][:1], count=d["count"] + 1)}
+                  "id trùng": lambda d: dict(d, results=d["results"] + d["results"][:1], count=d["count"] + 1),
+                  "mục không phải dict": lambda d: dict(d, results=d["results"][:1] + ["không phải dict"]),
+                  "id là chuỗi": lambda d: dict(d, results=d["results"][:1] + [dict(d["results"][1], id="1")]),
+                  "id là True": lambda d: dict(d, results=d["results"][:1] + [dict(d["results"][1], id=True)]),   # thay mục id 1 (không thì True == 1 làm id trùng)
+                  "results không phải list": lambda d: dict(d, results={"id": 1}, count=1)}
         for name, fn in broken.items():
             with self.subTest(name):
                 self.srv.tamper = {"/api/issues": fn}
