@@ -9,9 +9,12 @@ xuất file import, cho CVAT import vào job, xuất lại từ CVAT, rồi so t
   V4  sau khi xoay label và kéo điểm, toạ độ ở frame ghim vẫn khớp đúng sau import
   V5  quét nhãn do CVAT trả về: không có lỗi đỏ
   V6  số liệu "Manually / Interpolated" tool báo trong hộp Thông tin khớp bảng thống kê của CVAT (đếm keyframe)
+  V12 mắt kiểu shape: job có 1 track matphai + 3 shape mattrai (một có điểm Occluded, một có điểm Outside): đúng số, frame, toạ độ, cờ;
+      V12b hai người cùng nhãn cùng frame thành hai shape. Đọc lại bằng JSON như `GET /api/jobs/{id}/annotations` (đi qua `get_job_data`)
 
 Chạy:  python tests\\verify_vs_cvat.py [job_id=5] [thư_mục_ảnh]    Xoá nhãn trong job khi xong.
 """
+import json
 import math
 import os
 import random
@@ -26,6 +29,7 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from eyepin import cvatxml  # noqa: E402
+from eyepin.cvatsync import _compare_shapes, _json_eye_shapes, _sublabel_points  # noqa: E402
 from eyepin.geometry import EYES  # noqa: E402
 from eyepin.scan import scan  # noqa: E402
 from eyepin.session import Session  # noqa: E402
@@ -56,6 +60,30 @@ def export(fmt, name, wd):
     with zipfile.ZipFile(local) as z:
         z.extract("annotations.xml", os.path.join(wd, name))
     return os.path.join(wd, name, "annotations.xml")
+
+
+MARK = "@@"                      # tiền tố dòng kết quả JSON, để lọc khỏi dòng thông báo của Django
+
+
+def django_json(code):
+    """Chạy `code` (phải gọi `emit(obj)` đúng một lần) và trả đối tượng JSON."""
+    pre = f"import json\ndef emit(o): print('{MARK}' + json.dumps(o, default=str))\n"
+    lines = [l for l in django(pre + code) if l.startswith(MARK)]
+    return json.loads(lines[-1][len(MARK):])
+
+
+def job_info():
+    """Số frame đầu/cuối của job và nhãn đúng dạng `GET /api/labels` (có sublabels)."""
+    return django_json(
+        "from cvat.apps.engine.models import Job\n"
+        "from cvat.apps.engine.serializers import LabelSerializer\n"
+        f"j = Job.objects.get(pk={JOB}); t = j.segment.task\n"
+        "emit({'start': j.segment.start_frame, 'stop': j.segment.stop_frame, 'labels': [LabelSerializer(l).data for l in t.get_labels()]})")
+
+
+def annotations_json():
+    """Đúng dữ liệu `GET /api/jobs/{id}/annotations` trả (`Response(dm.task.get_job_data(pk))`)."""
+    return django_json(f"from cvat.apps.dataset_manager.task import get_job_data\nemit(get_job_data({JOB}))")
 
 
 results = []
@@ -220,6 +248,81 @@ def main():
         check("V11 hai người: CVAT có hai track mỗi label, track người 2 bắt đầu từ frame ghim của họ",
               counts == {"mattrai": 2, "matphai": 2} and starts == [("matphai", 0), ("matphai", 40), ("mattrai", 0), ("mattrai", 40)] and ids_ui == [1, 10, 19, 28],
               f"CVAT: {counts}, frame bắt đầu {starts}; ID trong tool {ids_ui} (giao diện CVAT hiện 1, 10, 19, 28 khi nạp bốn track)")
+        # ---- V12: mắt kiểu shape (ảnh rời) cùng mắt kia kiểu track trong một job ----
+        info = job_info()
+        labels, label_ids = info["labels"], {lb["id"]: lb["name"] for lb in info["labels"]}
+        nums = list(range(info["start"], info["stop"] + 1))
+
+        def roundtrip_json(sess, name):
+            """Xoá job, nạp file xuất của `sess`, trả JSON như `GET /api/jobs/{id}/annotations`."""
+            django(f"from cvat.apps.dataset_manager.task import JobAnnotation; JobAnnotation({JOB}).delete()")
+            sess.ann = cvatxml.parse(base)
+            o = os.path.join(wd, name + ".xml")
+            sess.export(o)
+            sh("docker", "cp", o, f"{CONTAINER}:/tmp/{name}.xml")
+            django(f"from cvat.apps.dataset_manager.task import import_job_annotations; import_job_annotations('/tmp/{name}.xml', {JOB}, 'CVAT 1.1', False)")
+            return annotations_json()
+
+        def shape_flag(occ, out):
+            return "occluded" if occ else ("outside" if out else None)
+
+        s3 = Session(FRAMES)
+        s3.pin_eye(0, "matphai", {i: b[i] for i in mr.pins}, kind="track")
+        shape_frames = [10, 50, 150]
+        for k, f in enumerate(shape_frames):
+            e = lens_eye(ml, 380 + 6 * k, 312 + 2 * k, 36, 9, tilt_deg=2 * k)
+            s3.pin_eye(f, "mattrai", {i: e[i] for i in ml.pins}, kind="shape")
+        s3.toggle_flag(50, 20, "occluded")                  # một shape có điểm Occluded
+        s3.toggle_flag(150, 16, "outside")                  # một shape có điểm Outside
+        aj = roundtrip_json(s3, "shapes_mixed")
+        sh_name = {l: [o for o in aj["shapes"] if label_ids.get(o["label_id"]) == l] for l in EYES}
+        tr_name = {l: [t for t in aj["tracks"] if label_ids.get(t["label_id"]) == l] for l in EYES}
+        got = _json_eye_shapes(aj, labels)
+        got_by_frame = {nums.index(jf) if jf in nums else jf: pts for name, jf, pts in got if name == "mattrai"}
+        bad = []
+        for f in shape_frames:
+            pts = got_by_frame.get(f)
+            if pts is None:
+                bad.append(("thiếu shape", f))
+                continue
+            fl = s3.flags_at(f)
+            for i in ml.ids:
+                xy, occ, out = pts[i]
+                if not (fl.get(i) == "outside") and math.dist(xy, s3.pins[f][i]) > 0.01:
+                    bad.append(("lệch", f, i, round(math.dist(xy, s3.pins[f][i]), 4)))
+                if shape_flag(occ, out) != fl.get(i):
+                    bad.append(("cờ", f, i, fl.get(i), shape_flag(occ, out)))
+        # track matphai: một track, một keyframe ở frame 0, toạ độ đúng
+        trk = tr_name["matphai"][0] if tr_name["matphai"] else None
+        track_err = None
+        if trk is not None:
+            track_err = 0.0
+            for el in trk.get("elements") or []:
+                who = _sublabel_points(labels).get(el["label_id"])
+                key0 = next((sp for sp in el["shapes"] if sp["frame"] == nums[0] and sp.get("keyframe", True)), None)
+                if who is None or key0 is None:
+                    track_err = math.inf
+                    break
+                track_err = max(track_err, math.dist(key0["points"][:2], s3.pins[0][who[1]]))
+        msgs = _compare_shapes(aj, labels, {"mattrai": s3.build_shapes(), "matphai": []}, set(), nums)
+        check("V12 shape: CVAT có 1 track matphai và 3 shape mattrai, đúng frame, toạ độ < 0,01 px, cờ đúng",
+              len(tr_name["matphai"]) == 1 and not tr_name["mattrai"] and len(sh_name["mattrai"]) == 3 and not sh_name["matphai"]
+              and sorted(got_by_frame) == shape_frames and not bad and track_err is not None and track_err < 0.01 and not msgs,
+              f"JSON: track {len(aj['tracks'])} (matphai {len(tr_name['matphai'])}), shape {len(aj['shapes'])} ở frame {sorted(got_by_frame)}; "
+              f"sai lệch {bad[:4]}; track matphai lệch {track_err}; _compare_shapes {msgs[:3] or 'khớp'}")
+        # hai người, cùng nhãn, cùng frame: hai shape
+        s4 = Session(FRAMES)
+        s4.pin_eye(20, "mattrai", {i: a[i] for i in ml.pins}, kind="shape")
+        s4.add_layer()
+        a4 = lens_eye(ml, 700, 330, 30, 8)
+        s4.pin_eye(20, "mattrai", {i: a4[i] for i in ml.pins}, kind="shape")
+        aj4 = roundtrip_json(s4, "shapes_twopeople")
+        pairs = [(jf, pts) for name, jf, pts in _json_eye_shapes(aj4, labels) if name == "mattrai"]
+        msgs4 = _compare_shapes(aj4, labels, {"mattrai": s4.build_shapes(), "matphai": []}, set(), nums)
+        ids4 = sorted(sh.attrs["id"] for sh in s4.build_shapes())
+        check("V12b hai người, cùng frame: CVAT có hai shape mattrai ở frame 20, khớp từng điểm",
+              len(pairs) == 2 and {jf for jf, _ in pairs} == {nums[20]} and not aj4["tracks"] and not msgs4 and len(set(ids4)) == 2,
+              f"JSON: {len(pairs)} shape, {len(aj4['tracks'])} track; ID tool {ids4}; _compare_shapes {msgs4[:3] or 'khớp'}")
         ok = all(results)
         print("KẾT QUẢ:", "ĐẠT" if ok else "KHÔNG ĐẠT", f"({sum(results)}/{len(results)})")
         return 0 if ok else 1
