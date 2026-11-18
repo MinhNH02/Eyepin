@@ -11,7 +11,9 @@ import xml.etree.ElementTree as ET
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from eyepin import cvatsync, cvatxml  # noqa: E402
+from eyepin.cvatsource import open_job  # noqa: E402
 from eyepin.cvatsync import _Want  # noqa: E402
+from eyepin.cvatxml import EyeKey, EyeShape, PointState  # noqa: E402
 from eyepin.geometry import EYES  # noqa: E402
 from test_cvatsource import VIDEO, xml_of  # noqa: E402
 from test_cvatsync import Sync, pin_frames, server_video_xml  # noqa: E402
@@ -161,6 +163,21 @@ class TestShapeSend(Sync):
         self.assertFalse(res.ok)
         self.assertTrue(any("frame 3" in m and "điểm 16" in m and "cờ occluded" in m for m in res.mismatches), res.mismatches)
 
+    def test_job_frame_numbers_differ_from_indices(self):
+        job = self.serve(start_frame=10, n_frames=5)
+        s = open_job(self.cl, 7)
+        shape_at(s, 1)
+        shape_at(s, 3)
+        self.serve_after_import(job, s)
+        res = cvatsync.send(s, self.cl, cvatsync.prepare(s, self.cl))
+        self.assertTrue(res.ok, (res.message, res.mismatches))
+        self.assertEqual(sorted(eye_skeletons_in_images(job)), [(11, "mattrai"), (13, "mattrai")])     # chỉ số -> số frame của job
+        self.serve_after_import(job, s, edit=lambda sh, pid, x, y, occ, out: (x + 3, y, occ, out) if (sh.key.frame == 3 and pid == 14)
+                                else (x, y, occ, out))
+        res = cvatsync.send(s, self.cl, cvatsync.prepare(s, self.cl))
+        self.assertFalse(res.ok)
+        self.assertTrue(any("frame 3 (số 13 của job)" in m and "điểm 14" in m for m in res.mismatches), res.mismatches)
+
     def test_track_only_job_text_unchanged(self):
         self.setup_job()
         s = self.session
@@ -174,22 +191,61 @@ class TestShapeSend(Sync):
 
 
 class TestCompareDropsShapeTracks(unittest.TestCase):
-    """`_compare` chỉ bỏ track một frame khi nó có thể là track CVAT sinh ra từ shape, không bỏ track thật của tool."""
+    """`_compare` bỏ track một frame mà bản xuất video sinh ra từ shape, mỗi shape đã gửi bỏ nhiều nhất một track, không bỏ track thật.
+    Job 8 frame (0..7). Track thật của tool: một keyframe ở frame f, mắt đứng yên, CVAT xuất mọi frame f..7. Shape của người khác cùng nhãn
+    ở frame f, lệch 30 px so với track thật."""
+    N = 8
+    DX = 30
 
-    def video(self, frame):
-        pts = "".join(f'<points label="{i}" keyframe="1" outside="0" occluded="0" points="{10 + i},{20 + i}"/>' for i in EYES["mattrai"].ids)
-        tr = f'<track id="1" label="mattrai" source="manual"><skeleton frame="{frame}" keyframe="1" outside="0" occluded="0">{pts}</skeleton></track>'
-        return cvatxml.parse_bytes(xml_of(tracks=tr, job_size=8))
+    @staticmethod
+    def pts(dx, keyframe=1):
+        return "".join(f'<points label="{i}" keyframe="{keyframe}" outside="0" occluded="0" points="{10 + i + dx},{20 + i}"/>'
+                       for i in EYES["mattrai"].ids)
 
-    def test_genuine_single_keyframe_track_on_a_shape_frame_is_kept(self):
-        video = self.video(7)
-        tr = video.tracks["mattrai"][0]
-        want = {"mattrai": [_Want(1, dict(tr.keys), {7: ({p: ps.xy for p, ps in tr.keys[7].points.items()}, {})})], "matphai": []}
-        out = cvatsync._compare(video, want, set(), list(range(8)), {"mattrai": {7}, "matphai": set()})
+    def real_track(self, f):
+        sk = "".join(f'<skeleton frame="{g}" keyframe="{int(g == f)}" outside="0" occluded="0">{self.pts(0, int(g == f))}</skeleton>'
+                     for g in range(f, self.N))
+        return f'<track id="1" label="mattrai" source="manual">{sk}</track>'
+
+    def shape_track(self, f):
+        return (f'<track id="2" label="mattrai" source="file"><skeleton frame="{f}" keyframe="1" outside="0" occluded="0">{self.pts(self.DX)}'
+                f'</skeleton><skeleton frame="{f + 1}" keyframe="1" outside="1" occluded="0">{self.pts(self.DX)}</skeleton></track>')
+
+    def want(self, f):
+        key = EyeKey(f, {i: PointState((10.0 + i, 20.0 + i)) for i in EYES["mattrai"].ids})
+        frames = {g: ({i: (10.0 + i, 20.0 + i) for i in EYES["mattrai"].ids}, {}) for g in range(f, self.N)}
+        return {"mattrai": [_Want(1, {f: key}, frames)], "matphai": []}
+
+    def shapes(self, *frames):
+        return {"mattrai": [EyeShape("mattrai", EyeKey(f, {i: PointState((10.0 + i + self.DX, 20.0 + i)) for i in EYES["mattrai"].ids}),
+                                     {"id": "19"}) for f in frames], "matphai": []}
+
+    def compare(self, tracks, want, shapes):
+        video = cvatxml.parse_bytes(xml_of(tracks=tracks, job_size=self.N))
+        return cvatsync._compare(video, want, set(), list(range(self.N)), shapes)
+
+    def test_real_single_keyframe_track_and_shape_on_the_same_frame(self):
+        out = self.compare(self.real_track(3) + self.shape_track(3), self.want(3), self.shapes(3))
         self.assertEqual(out, [])
 
+    def test_real_single_keyframe_track_and_shape_on_the_last_frame(self):
+        last = self.N - 1
+        for order in ((self.real_track(last), self.shape_track(last)), (self.shape_track(last), self.real_track(last))):
+            with self.subTest(order=order[0][:30]):
+                self.assertEqual(self.compare("".join(order), self.want(last), self.shapes(last)), [])
+
+    def test_real_track_lost_by_cvat_on_the_last_frame_is_still_a_count_mismatch(self):
+        last = self.N - 1
+        out = self.compare(self.shape_track(last), self.want(last), self.shapes(last))
+        self.assertEqual(out, ["mattrai: tool gửi 1 track, CVAT có 0 track"])
+
+    def test_at_most_one_track_is_dropped_per_shape(self):
+        last = self.N - 1
+        out = self.compare(self.real_track(last) + self.shape_track(last), {"mattrai": [], "matphai": []}, self.shapes(last))
+        self.assertEqual(out, ["mattrai: tool gửi 0 track, CVAT có 1 track"])
+
     def test_single_keyframe_track_without_a_shape_is_not_dropped(self):
-        out = cvatsync._compare(self.video(2), {"mattrai": [], "matphai": []}, set(), list(range(8)), {"mattrai": {5}, "matphai": set()})
+        out = self.compare(self.shape_track(2), {"mattrai": [], "matphai": []}, self.shapes(5))
         self.assertEqual(out, ["mattrai: tool gửi 0 track, CVAT có 1 track"])
 
 

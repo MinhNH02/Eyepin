@@ -281,9 +281,11 @@ def _json_eye_shapes(aj: dict, labels: list[dict]) -> list[tuple[str, int, dict[
     return out
 
 
-def _compare_shapes(aj: dict, labels: list[dict], want: dict[str, list[EyeShape]], skip: set[int], nums: list[int]) -> list[str]:
+def _compare_shapes(aj: dict, labels: list[dict], want: dict[str, list[EyeShape]], skip: set[int], nums: list[int],
+                    cap: bool = True) -> list[str]:
     """So shape mắt CVAT lưu (JSON sau import) với shape tool gửi: số shape mỗi nhãn, frame, toạ độ từng điểm (trong `TOL_KEY`), cờ từng
-    điểm. Frame trong `skip` (đã xoá trong CVAT) bỏ qua. Hai shape cùng nhãn cùng frame (hai người) được ghép theo điểm gần nhau nhất."""
+    điểm. Frame trong `skip` (đã xoá trong CVAT) bỏ qua. Hai shape cùng nhãn cùng frame (hai người) được ghép theo điểm gần nhau nhất.
+    `cap=False`: không cắt danh sách (người gọi cắt sau khi gộp)."""
     index = {n: i for i, n in enumerate(nums)}
     got: dict[str, dict[int, list[dict]]] = {l: {} for l in EYES}
     outside_job: dict[str, list[int]] = {l: [] for l in EYES}
@@ -336,39 +338,50 @@ def _compare_shapes(aj: dict, labels: list[dict], want: dict[str, list[EyeShape]
                     if d > TOL_KEY:
                         out.append(f"{label} shape {_at(f, nums)}, điểm {pid}: lệch {d:.2f} px (tool {ps.xy[0]:.2f},{ps.xy[1]:.2f}; "
                                    f"CVAT {xy[0]:.2f},{xy[1]:.2f})")
-    return _cap(out)
+    return _cap(out) if cap else out
 
 
-def _from_shape(t, label: str, shape_frames: dict[str, set[int]], single: dict[str, set[int]]) -> bool:
-    """Track `t` của bản xuất "CVAT for video" có phải track CVAT sinh ra từ một shape không (`ShapeManager.to_tracks` trong mã nguồn CVAT:
-    keyframe ở frame của shape rồi keyframe Outside ở frame kế; chưa kiểm trên CVAT thật). Đúng khi track chỉ có MỘT frame không Outside, là
-    keyframe, nằm ở frame tool đã gửi shape nhãn đó, và tool không gửi track thật nào của nhãn đó chỉ có đúng keyframe ấy (`single`: hai
-    loại trông giống hệt nhau thì giữ lại, để đếm track báo lệch chứ không im lặng bỏ track thật)."""
-    real = [f for f, k in t.keys.items() if not k.outside]
-    if len(real) != 1 or not t.keys[real[0]].keyframe:
-        return False
-    f = real[0]
-    return f in shape_frames.get(label, ()) and f not in single.get(label, ())
+def _key_dist(a: EyeKey, b: EyeKey) -> float:
+    """Khoảng cách trung bình giữa các điểm không Outside có ở cả hai (không có điểm nào để so thì 0)."""
+    d = [math.dist(p.xy, b.points[i].xy) for i, p in a.points.items() if not p.outside and i in b.points and not b.points[i].outside]
+    return sum(d) / len(d) if d else 0.0
+
+
+def _shape_tracks(tracks: list, sent: list[EyeShape]) -> list:
+    """Các track trong `tracks` (một nhãn, bản xuất "CVAT for video") được coi là track CVAT sinh ra từ các shape `sent` tool đã gửi.
+
+    Dạng theo mã nguồn CVAT (`ShapeManager.to_tracks`; chưa kiểm trên CVAT thật): keyframe ở frame của shape rồi keyframe Outside ở frame kế,
+    nên ứng viên là track chỉ có MỘT frame không Outside và frame đó là keyframe. Track thật bản xuất video ghi mọi frame từ keyframe đầu tới
+    hết job nên chỉ giống ứng viên khi nằm ở frame cuối. Mỗi shape đã gửi bỏ nhiều nhất một ứng viên cùng frame, chọn ứng viên có điểm gần
+    shape nhất; vì vậy track thật không bao giờ bị bỏ nhiều hơn số shape, và track thật CVAT làm mất vẫn lộ ra ở phép đếm track."""
+    cands: dict[int, list] = {}
+    for t in tracks:
+        real = [f for f, k in t.keys.items() if not k.outside]
+        if len(real) == 1 and t.keys[real[0]].keyframe:
+            cands.setdefault(real[0], []).append(t)
+    drop = []
+    for sh in sent:
+        pool = cands.get(sh.key.frame)
+        if pool:
+            best = min(pool, key=lambda t: _key_dist(sh.key, t.keys[sh.key.frame]))
+            pool.remove(best)
+            drop.append(best)
+    return drop
 
 
 def _compare(video: Annotations, want: dict[str, list[_Want]], skip: set[int], nums: list[int],
-             shape_frames: dict[str, set[int]] | None = None) -> list[str]:
+             shapes: dict[str, list[EyeShape]] | None = None, cap: bool = True) -> list[str]:
     """V1 (vị trí), V2 (cờ), V3 (keyframe) của tests/verify_vs_cvat.py, trên bản xuất "CVAT for video" sau import. Frame trong `skip` (đã xoá) bỏ qua;
     frame CVAT không xuất mà không phải keyframe cũng bỏ qua (CVAT chỉ ghi keyframe khi nhận file, ghi từng frame khi xuất).
-    `shape_frames` {nhãn: chỉ số frame tool gửi shape}: bản xuất video đổi mỗi shape thành một track một frame; các track đó bị bỏ trước khi
-    đếm và ghép (shape được đối chiếu riêng bằng JSON, `_compare_shapes`)."""
+    `shapes` {nhãn: shape tool đã gửi}: bản xuất video đổi mỗi shape thành một track một frame; các track đó bị bỏ trước khi đếm và ghép
+    (`_shape_tracks`; shape được đối chiếu riêng bằng JSON, `_compare_shapes`). `cap=False`: không cắt danh sách (người gọi cắt sau khi gộp)."""
     out: list[str] = []
-
-    def at(f):
-        return _at(f, nums)
-
-    single = {l: {min(w.keys) for w in ws if len(w.keys) == 1} for l, ws in want.items()}
-
     for label, spec in EYES.items():
         ws = sorted(want[label], key=lambda w: (min(w.keys), w.tid))
         tracks = video.tracks[label]
-        if shape_frames:
-            tracks = [t for t in tracks if not _from_shape(t, label, shape_frames, single)]
+        if shapes and shapes.get(label):
+            drop = {id(t) for t in _shape_tracks(tracks, shapes[label])}
+            tracks = [t for t in tracks if id(t) not in drop]
         ts = sorted(tracks, key=lambda t: (min(t.keys) if t.keys else -1, int(t.attrs.get("id", 0)) if str(t.attrs.get("id", "")).isdigit() else 0))
         if len(ws) != len(ts):
             out.append(f"{label}: tool gửi {len(ws)} track, CVAT có {len(ts)} track")
@@ -376,10 +389,10 @@ def _compare(video: Annotations, want: dict[str, list[_Want]], skip: set[int], n
             got_keys = {f for f, k in t.keys.items() if k.keyframe}
             for f in sorted(set(w.keys) - got_keys):
                 if f not in skip:
-                    out.append(f"{label} {at(f)}: CVAT thiếu keyframe tool đã gửi")
+                    out.append(f"{label} {_at(f, nums)}: CVAT thiếu keyframe tool đã gửi")
             for f in sorted(got_keys - set(w.keys)):
                 if f not in skip:
-                    out.append(f"{label} {at(f)}: CVAT có keyframe tool không gửi")
+                    out.append(f"{label} {_at(f, nums)}: CVAT có keyframe tool không gửi")
             for f in sorted(t.keys):
                 if f in skip or f not in w.frames:
                     continue
@@ -390,16 +403,16 @@ def _compare(video: Annotations, want: dict[str, list[_Want]], skip: set[int], n
                         continue
                     have = "occluded" if p.occluded else ("outside" if p.outside else None)
                     if flags.get(pid) != have:
-                        out.append(f"{label} {at(f)}, điểm {pid}: cờ {flags.get(pid) or 'không'} ở tool, {have or 'không'} ở CVAT")
+                        out.append(f"{label} {_at(f, nums)}, điểm {pid}: cờ {flags.get(pid) or 'không'} ở tool, {have or 'không'} ở CVAT")
                     if p.outside:
                         continue                              # điểm Outside không có toạ độ thật để so
                     exact = f in w.keys
                     ref = w.keys[f].points[pid].xy if exact else ours[pid]
                     d = math.dist(ref, p.xy)
                     if d > (TOL_KEY if exact else TOL_INTERP):
-                        out.append(f"{label} {at(f)}, điểm {pid}: lệch {d:.2f} px (tool {ref[0]:.2f},{ref[1]:.2f}; CVAT {p.xy[0]:.2f},{p.xy[1]:.2f})"
+                        out.append(f"{label} {_at(f, nums)}, điểm {pid}: lệch {d:.2f} px (tool {ref[0]:.2f},{ref[1]:.2f}; CVAT {p.xy[0]:.2f},{p.xy[1]:.2f})"
                                    + ("" if exact else " giữa hai keyframe"))
-    return _cap(out)
+    return _cap(out) if cap else out
 
 
 def mark_synced(session: Session, client: CvatClient) -> str | None:
@@ -476,10 +489,11 @@ def send(session: Session, client: CvatClient, plan: SendPlan) -> SendResult:
     lost = _count_diff(plan.non_eye, after, plan.label_names)                  # lưới an toàn: nhãn không phải mắt phải còn đủ
     skip, nums = set(session.source.deleted), session.source.frame_numbers
     n_shapes = sum(map(len, want_shapes.values()))
-    shape_frames = {l: {sh.key.frame for sh in shs} for l, shs in want_shapes.items()} if n_shapes else None
-    mismatches = lost + _compare(video, want, skip, nums, shape_frames)       # track một frame do bản xuất video sinh ra từ shape: bỏ
-    if n_shapes:                                              # shape chỉ JSON giữ đúng loại
-        mismatches += _compare_shapes(aj, plan.labels, want_shapes, skip, nums)
+    if n_shapes:                                              # track một frame do bản xuất video sinh ra từ shape bị bỏ; shape so bằng JSON
+        mismatches = lost + _cap(_compare(video, want, skip, nums, want_shapes, cap=False)
+                                 + _compare_shapes(aj, plan.labels, want_shapes, skip, nums, cap=False))
+    else:
+        mismatches = lost + _compare(video, want, skip, nums)
     if lost:                                                  # bản chụp là cùng bản xuất nền nên có thể cũng thiếu các nhãn này: không hứa khôi phục
         return fail(f"Đã gửi, nhưng CVAT lưu khác tool ở {len(mismatches)} chỗ, trong đó có nhãn không phải mắt bị mất hoặc đổi số lượng. "
                     "Bản chụp trước khi gửi có thể không chứa các nhãn đó nên khôi phục có thể không lấy lại được: hãy kiểm trên CVAT ngay.",
