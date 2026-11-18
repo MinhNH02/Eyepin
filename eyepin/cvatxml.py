@@ -12,6 +12,7 @@ from __future__ import annotations
 import bisect
 import copy
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from .geometry import EYES, Point
@@ -41,6 +42,14 @@ class EyeTrack:
     label: str
     keys: dict[int, EyeKey] = field(default_factory=dict)       # theo frame
     attrs: dict = field(default_factory=dict)
+
+
+@dataclass
+class EyeShape:
+    """Một shape mắt (một frame, không nội suy): đủ 8 điểm kèm cờ của một người tại `key.frame` (chỉ số EyePin)."""
+    label: str
+    key: EyeKey
+    attrs: dict = field(default_factory=dict)        # {"id": "19"}: chỉ để tool dùng, không ghi ra file
 
 
 @dataclass
@@ -253,11 +262,14 @@ def _skeleton_el(key: EyeKey, ids: list[int], with_frame: bool, label: str | Non
 
 
 def write_eyes(ann: Annotations, out_path: str, *, new_tracks: dict[str, EyeTrack] | list[EyeTrack] | None = None,
-               new_shapes: dict[str, dict[int, EyeKey]] | None = None) -> None:
+               new_shapes: dict[str, dict[int, EyeKey]] | list[EyeShape] | None = None,
+               frame_names: Sequence[str] | None = None, size: tuple[int, int] | None = None) -> None:
     """Ghi file mới: bỏ mọi skeleton mắt cũ, thêm skeleton mắt mới; mọi thứ khác giữ nguyên.
 
     new_tracks: {label: EyeTrack} hoặc danh sách EyeTrack (một label có thể có nhiều track), keyframe đủ 8 điểm.
-    new_shapes: {label: {frame: EyeKey}} dạng shape từng frame.
+    new_shapes: {label: {frame: EyeKey}} (dạng cũ, mỗi frame một shape) hoặc danh sách EyeShape (nhiều shape cùng label, cùng frame).
+    frame_names[i]: tên ảnh của chỉ số EyePin i; size: (rộng, cao). Hai tham số này chỉ dùng để tạo thẻ <image> cho frame mà file chưa
+    có (CVAT ghép <image> với frame của job theo `name` rồi mới tới `id`); thiếu `frame_names` mà frame chưa có <image> thì KeyError.
     """
     tree = copy.deepcopy(ann.tree)
     root = tree.getroot()
@@ -296,13 +308,29 @@ def write_eyes(ann: Annotations, out_path: str, *, new_tracks: dict[str, EyeTrac
                 raise ValueError(f"frame {f} nằm ngoài job")
             tr.append(_skeleton_el(et.keys[f], spec.ids, True, None, to_job(f)))
         root.append(tr)
-    for label, per_frame in (new_shapes or {}).items():
-        spec = EYES[label]
-        by_id = {int(im.get("id")): im for im in root.findall("image")}
-        for f, key in per_frame.items():
-            jf = to_job(f)
-            if jf not in by_id:
+    if isinstance(new_shapes, dict):
+        shape_list = [EyeShape(label, key) for label, per_frame in new_shapes.items() for key in per_frame.values()]
+        job_frames = [jf for per_frame in new_shapes.values() for jf in (to_job(f) for f in per_frame)]
+    else:
+        shape_list = list(new_shapes or [])
+        job_frames = [to_job(sh.key.frame) for sh in shape_list]
+    by_id = {int(im.get("id")): im for im in root.findall("image")}
+    created: dict[int, ET.Element] = {}
+    for sh, jf in zip(shape_list, job_frames):
+        if jf not in by_id:
+            f = sh.key.frame
+            if frame_names is None or not 0 <= f < len(frame_names) or jf is None:
                 raise KeyError(f"File không có <image id={jf}>; shape mắt chỉ ghi được khi export ở dạng 'CVAT for images'")
-            by_id[jf].append(_skeleton_el(key, spec.ids, False, label))
+            attrs = {"id": str(jf), "name": frame_names[f]}
+            wh = size if size is not None else ((ann.width, ann.height) if ann.width and ann.height else None)
+            if wh is not None:
+                attrs["width"], attrs["height"] = (str(int(v)) for v in wh)
+            by_id[jf] = created[jf] = ET.Element("image", attrs)
+        by_id[jf].append(_skeleton_el(sh.key, EYES[sh.label].ids, False, sh.label))
+    if created:                                           # <image> mới nằm trước <track> đầu tiên, theo thứ tự id
+        children = list(root)
+        at = next((k for k, el in enumerate(children) if el.tag == "track"), len(children))
+        for n, jf in enumerate(sorted(created)):
+            root.insert(at + n, created[jf])
     ET.indent(tree, space="  ")
     tree.write(out_path, encoding="utf-8", xml_declaration=True)
