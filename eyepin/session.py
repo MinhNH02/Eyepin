@@ -36,6 +36,8 @@ MATCH_FLAG = 0.85           # độ khớp dưới mức này thì đánh dấu 
 QC_MSG = "Job đã có nhãn mắt: đang ở chế độ QC. Muốn sửa thì bấm 'Xoá nhãn mắt cũ và gán lại'."
 SHAPE_KEY_MSG = "shape không có keyframe"
 SHAPE_OUTSIDE_MSG = "shape không có Outside cho cả mắt; đánh Outside từng điểm hoặc xoá shape"
+SHAPE_PIN_MSG = ("frame này có shape: bỏ cả frame ghim sẽ xoá luôn shape đó; bỏ keyframe của từng mắt track (K) "
+                 "hoặc xoá shape (Del)")
 KINDS = ("track", "shape")
 
 _EYE_UIDS = itertools.count(1)     # mã nội bộ của từng mắt (Layer.eye_uid): tăng mãi, không dùng lại, kể cả giữa các phiên
@@ -403,7 +405,11 @@ class Session:
         return new
 
     def remove_pin(self, frame: int) -> None:
+        """Bỏ cả frame ghim (mọi mắt). Frame có shape thì ValueError (`SHAPE_PIN_MSG`), không đổi gì: bỏ cả frame sẽ xoá luôn đối tượng
+        shape đó; bỏ keyframe từng mắt track bằng `toggle_eye_key`, xoá shape bằng `delete_shape`."""
         self._guard_qc()                                     # đổi pending/flags cả khi frame không phải frame ghim
+        if any(self.has_shape(l, frame) for l in EYES):
+            raise ValueError(SHAPE_PIN_MSG)
         if frame in self.pins:
             self._push_undo()
         self.flags.pop(frame, None)

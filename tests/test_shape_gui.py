@@ -250,6 +250,51 @@ class ShapeGuiTests(unittest.TestCase):
         self.assertEqual(app.f, 3)
         self.assertIn("shape không có keyframe", app.notice)
 
+    def mixed(self):
+        """matphai track + mattrai shape ở frame 3 (cùng một người)."""
+        app = self.make_app()
+        self.draw(app, 3, label="matphai", kind="track")
+        self.draw(app, 3)
+        app.go(3)
+        return app
+
+    def test_remove_keyframe_menu_on_track_keeps_other_eyes_shape(self):
+        """Menu "Bỏ keyframe ở frame này" với mắt TRACK ở frame có shape của mắt kia: chỉ bỏ keyframe của mắt track đó (như K),
+        shape và ID của nó còn nguyên; một bước hoàn tác."""
+        app = self.mixed()
+        sid = app.s.object_id("mattrai", 3)
+        undo = len(app.s._undo)
+        app.select_eye("matphai", quiet=True)
+        app.object_remove()
+        self.assertTrue(app.s.has_shape("mattrai", 3))
+        self.assertEqual(app.s.object_id("mattrai", 3), sid)
+        self.assertEqual(app.s.eye_keyframes("matphai"), [])
+        self.assertEqual(len(app.s._undo), undo + 1)
+        self.assertIn("matphai", app.notice)
+        app.undo()
+        self.assertEqual(app.s.eye_keyframes("matphai"), [3])
+        self.assertEqual(app.s.object_id("mattrai", 3), sid)
+
+    def test_remove_whole_pin_refuses_when_a_shape_is_here(self):
+        """Lệnh bỏ cả frame ghim (`App.remove_pin`) ở frame có shape: không đổi gì, báo lý do."""
+        app = self.mixed()
+        before = self.snap(app.s)
+        app.notice = ""
+        app.remove_pin()
+        self.assertEqual(self.snap(app.s), before)
+        self.assertIn("shape", app.notice)
+
+    def test_remove_keyframe_menu_refuses_locked_shape(self):
+        app = self.make_app()
+        self.draw(app, 3)
+        app.go(3)
+        app.select_eye("mattrai", quiet=True)
+        app.toggle_lock()
+        before = self.snap(app.s)
+        app.object_remove()
+        self.assertEqual(self.snap(app.s), before)
+        self.assertIn("khoá", app.notice)
+
     def test_remove_keyframe_menu_on_shape_keeps_other_eye(self):
         """Menu "Bỏ keyframe ở frame này" với mắt shape: chỉ xoá shape đó ở frame này (như Del), mắt track kia giữ keyframe."""
         app = self.make_app()

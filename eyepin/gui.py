@@ -1669,8 +1669,13 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
     @edit_command
     def remove_pin(self):
         if self.s and self.f in self.s.pins:
-            self.s.remove_pin(self.f)
-            self.notice = "Đã bỏ frame ghim."
+            try:
+                self.s.remove_pin(self.f)
+                self.notice = "Đã bỏ frame ghim."
+            except ValueError as err:                         # frame có shape: bỏ cả frame sẽ xoá luôn shape (SHAPE_PIN_MSG)
+                if str(err) == QC_MSG:
+                    raise                                     # QC_MSG vẫn để `edit_command` xử lý
+                self.notice = str(err)
             self.refresh()
 
     @edit_command

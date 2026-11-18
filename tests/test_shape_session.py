@@ -74,6 +74,21 @@ class ShapeSessionTests(unittest.TestCase):
         self.assertEqual(s.shape_ids["mattrai"], {5: 10, 7: 19})
         self.assertEqual(sorted(s.labels), [5, 7])
 
+    def test_remove_pin_refuses_a_frame_with_a_shape(self):
+        """Bỏ cả frame ghim (`remove_pin`) mà frame có shape: từ chối, không đổi gì (bỏ cả frame sẽ xoá luôn một đối tượng shape)."""
+        s = Session(self.dir)
+        s.pin_eye(3, "matphai", four("matphai", 3), kind="track")
+        s.pin_eye(3, "mattrai", four("mattrai", 3), kind="shape")
+        before = self.state(s)
+        with self.assertRaises(ValueError) as cm:
+            s.remove_pin(3)
+        self.assertIn("shape", str(cm.exception))
+        self.assertEqual(self.state(s), before)
+        t = Session(self.dir)                                      # frame chỉ có track: bỏ như cũ
+        t.pin_eye(3, "matphai", four("matphai", 3), kind="track")
+        t.remove_pin(3)
+        self.assertNotIn(3, t.pins)
+
     def test_track_eye_is_untouched_by_a_shape_eye(self):     # điểm soi 5
         s = Session(self.dir)
         s.pin_eye(0, "matphai", four("matphai", 0), kind="track")

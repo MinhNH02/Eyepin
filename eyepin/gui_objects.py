@@ -393,20 +393,24 @@ class ObjectsMixin:
 
     @edit_command
     def object_remove(self):
-        """Menu ⋮ "Bỏ keyframe ở frame này". Mắt track: bỏ frame ghim này (như trước). Mắt shape không có keyframe: xoá shape của RIÊNG mắt
-        đó ở frame này (như Del), keyframe của mắt khác ở frame này giữ nguyên."""
+        """Menu ⋮ "Bỏ keyframe ở frame này". Mắt track: bỏ frame ghim này (như trước); frame có shape (của mắt kia) thì chỉ bỏ keyframe của
+        RIÊNG mắt track đó (như K), để không xoá theo đối tượng shape. Mắt shape không có keyframe: xoá shape của RIÊNG mắt đó ở frame này
+        (như Del), keyframe của mắt khác ở frame này giữ nguyên."""
         label = self._sel_eye()
         if not label:
             return
-        if self.s.eye_kind(label) == "shape" and label in self.locked:
+        s = self.s
+        if s.eye_kind(label) == "shape" and label in self.locked:
             self.notice = f"{label} đang bị khoá; mở khoá trước khi xoá shape."
-        elif self.s.eye_kind(label) == "shape":
-            try:
-                self.s.delete_shape(label, self.f)
-                self.notice = f"Đã xoá shape {label} ở frame {self.f} (shape không có keyframe; Ctrl+Z để hoàn tác)."
-            except ValueError as err:
-                self.notice = str(err)
-        elif self.f in self.s.pins:
+        elif s.eye_kind(label) == "shape":
+            self._delete_shape_here(label)
+        elif any(s.has_shape(l, self.f) for l in EYES):
+            if self.f in s.eye_keyframes(label):
+                s.toggle_eye_key(label, self.f)
+                self.notice = f"Đã bỏ keyframe của {label} ở frame này; shape ở frame này giữ nguyên."
+            else:
+                self.notice = f"Frame này không phải keyframe của {label}."
+        elif self.f in s.pins:
             self.s.remove_pin(self.f)
             self.notice = "Đã bỏ keyframe ở frame này."
         else:
@@ -427,16 +431,24 @@ class ObjectsMixin:
         if label in self.locked and not force:
             self.notice = f"{label} đang bị khoá; bấm Shift+Del để xoá cả mắt khoá."
         else:
-            try:
-                if self.s.eye_kind(label) == "shape":                # shape chỉ ở một frame: Del xoá shape ở frame này, không phải cả mắt
-                    self.s.delete_shape(label, self.f)
-                    self.notice = f"Đã xoá shape {label} ở frame {self.f} (Ctrl+Z để hoàn tác)."
-                else:
+            if self.s.eye_kind(label) == "shape":                    # shape chỉ ở một frame: Del xoá shape ở frame này, không phải cả mắt
+                self._delete_shape_here(label)
+            else:
+                try:
                     n = self.s.delete_eye(label)
                     self.notice = f"Đã xoá {label} ở {n} frame ghim (Ctrl+Z để hoàn tác). Bấm {self.kl('draw_eye')} để vẽ lại mắt này."
-            except ValueError as err:
-                self.notice = str(err)
+                except ValueError as err:
+                    self.notice = str(err)
         self.refresh()
+
+    def _delete_shape_here(self, label: str):
+        """Xoá shape của mắt `label` ở frame đang xem (Del và menu "Bỏ keyframe ở frame này" của mắt shape); lỗi của session thành thông báo.
+        Người gọi lo kiểm khoá và `refresh`."""
+        try:
+            self.s.delete_shape(label, self.f)
+            self.notice = f"Đã xoá shape {label} ở frame {self.f} (Ctrl+Z để hoàn tác)."
+        except ValueError as err:
+            self.notice = str(err)
 
     @edit_command
     def end_label_here(self):
