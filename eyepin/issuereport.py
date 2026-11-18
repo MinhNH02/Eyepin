@@ -137,9 +137,10 @@ def build(url: str, user: str, task: dict, jobs: list[dict], issues: list[dict],
     for i in issues:
         mine = by_issue[i["id"]]
         job = listed.get(i["job"])
+        message = _text(mine[0]) if mine else ""
         rows.append(Row(
             issue_id=i["id"], job=i["job"], frame=i["frame"], link=frame_link(url, task["id"], i["job"], i["frame"]),
-            message=_text(mine[0]) if mine else NO_MESSAGE, resolved=bool(i.get("resolved")),
+            message=message if message.strip() else NO_MESSAGE, resolved=bool(i.get("resolved")),   # lời thật giữ nguyên, rỗng hay chỉ có khoảng trắng thì ghi rõ
             owner=username(i.get("owner")) or UNKNOWN_USER, created=local_time(i.get("created_date"), tz),
             assignee=(job.get("assignee") or "") if job else "", replies="\n".join(_reply(c, tz) for c in mine[1:])))
     rows.sort(key=lambda r: (r.job, r.frame, r.issue_id))

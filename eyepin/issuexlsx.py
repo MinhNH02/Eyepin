@@ -39,12 +39,21 @@ def _openpyxl():
     return openpyxl
 
 
+def ensure_available() -> None:
+    """Không làm gì nếu có `openpyxl`; thiếu thì ném `MissingOpenpyxl`. Để báo người dùng TRƯỚC khi hỏi nơi lưu file."""
+    _openpyxl()
+
+
 def clean_text(value) -> str:
     """Chữ an toàn để đặt vào một ô: bỏ ký tự điều khiển mà Excel không nhận và ký tự surrogate lẻ (đều làm hỏng file), cắt bớt nếu dài hơn một ô
-    chứa được. None thành chuỗi rỗng."""
+    chứa được. Giới hạn của Excel tính bằng đơn vị UTF-16: ký tự ngoài BMP (emoji) tính hai đơn vị. Quá dài thì giữ đoạn đầu dài nhất, cắt đúng ranh
+    giới ký tự, vừa trong `MAX_CELL - 1` đơn vị rồi thêm "…". None thành chuỗi rỗng."""
     illegal = _openpyxl().cell.cell.ILLEGAL_CHARACTERS_RE
     text = _LONE_SURROGATE.sub("", illegal.sub("", "" if value is None else str(value)))
-    return text if len(text) <= MAX_CELL else text[:MAX_CELL - 1] + "…"
+    units = text.encode("utf-16-le")
+    if len(units) // 2 <= MAX_CELL:
+        return text
+    return units[:2 * (MAX_CELL - 1)].decode("utf-16-le", errors="ignore") + "…"       # cặp surrogate bị cắt đôi ở cuối thì bỏ nửa lẻ
 
 
 def default_name(report, now: datetime | None = None) -> str:

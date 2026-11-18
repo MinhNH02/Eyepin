@@ -67,6 +67,20 @@ class TestBuild(unittest.TestCase):
         self.assertEqual((a.owner, a.created, a.message, a.replies, a.assignee), ("(không rõ)", None, "(không có mô tả)", "", ""))
         self.assertEqual((b.message, b.replies), ("mô tả", "(không rõ): trả lời"))
 
+    def test_blank_first_comment_reads_as_no_message(self):
+        issues = [fake_issue(1, 7, 3, comments=1), fake_issue(2, 7, 4, comments=2)]
+        comments = [fake_comment(10, 1, ""), fake_comment(11, 2, "   "), fake_comment(12, 2, "trả lời")]
+        jobs = [{"id": 7, "type": "annotation", "assignee": "", "issues": 2}]
+        a, b = build(jobs=jobs, issues=issues, comments=comments).rows
+        self.assertEqual((a.message, b.message), ("(không có mô tả)", "(không có mô tả)"))
+        self.assertIn("trả lời", b.replies)
+
+    def test_message_with_text_is_kept_exactly(self):
+        issues = [fake_issue(1, 7, 3, comments=1)]
+        jobs = [{"id": 7, "type": "annotation", "assignee": "", "issues": 1}]
+        row = build(jobs=jobs, issues=issues, comments=[fake_comment(10, 1, "  chữ  \n")]).rows[0]
+        self.assertEqual(row.message, "  chữ  \n")                                     # không cắt khoảng trắng của lời thật
+
     def test_comments_of_unknown_issues_are_ignored(self):
         _, _, _, comments = data()
         rep = build(comments=comments + [fake_comment(99, 12345, "của task khác")])

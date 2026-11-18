@@ -89,6 +89,14 @@ class TestIssueSheet(XlsxCase):
         self.assertEqual(ix.clean_text(12), "12")
         self.assertEqual(ix.clean_text("ổn"), "ổn")
 
+    def test_limit_counts_utf16_units(self):
+        out = ix.clean_text("😀" * 20000)                                            # mỗi emoji là 2 đơn vị UTF-16 trong Excel
+        self.assertLessEqual(len(out.encode("utf-16-le")) // 2, 32767)
+        self.assertTrue(out.endswith("…"))
+        self.assertEqual(out[:-1], "😀" * 16383)
+        ws = self.write([row(1, 7, 1, "😀" * 20000)])["Issue"]
+        self.assertEqual(ws["E2"].value, out)
+
 
 class TestSummarySheet(XlsxCase):
     def test_info_lines_warnings_and_table(self):
@@ -113,6 +121,14 @@ class TestSummarySheet(XlsxCase):
 
 
 class TestSaving(XlsxCase):
+    def test_ensure_available(self):
+        self.assertIsNone(ix.ensure_available())
+        gone = {k: None for k in list(sys.modules) if k == "openpyxl" or k.startswith("openpyxl.")}   # chặn cả `from openpyxl.x import y`
+        with mock.patch.dict(sys.modules, gone):
+            with self.assertRaises(ix.MissingOpenpyxl) as cm:
+                ix.ensure_available()
+        self.assertEqual(str(cm.exception), "Máy chưa có thư viện openpyxl nên chưa xuất được Excel. Cài bằng lệnh: pip install openpyxl")
+
     def test_default_name(self):
         self.assertEqual(ix.default_name(report(ROWS), NOW), "bao-cao-issue_task-3_20261118-1501.xlsx")
 
