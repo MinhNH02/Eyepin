@@ -7,7 +7,7 @@ Tk: kết quả đi qua hàng đợi, luồng chính lấy bằng `root.after`. 
 sau khi màn đã đóng, bị bỏ. Lấy lỗi thì bảng để trống (không ai xuất nhầm dữ liệu cũ).
 
 Mọi thứ hiện trên màn nằm trong `self._report_ui` (dict rỗng khi màn đóng); dữ liệu hiện ra luôn suy từ `ui["report"]`, không từ ô chọn task.
-File Excel cũng ghi từ `ui["report"]` và đúng bộ lọc đang đặt. Việc đăng nhập: 401 lúc lấy mở lại hộp đăng nhập của `CvatMixin` rồi tự lấy lại (không
+File Excel cũng ghi từ `ui["report"]` và đúng bộ lọc lúc bấm "Xuất Excel…" (chụp trước hộp chọn nơi lưu). Việc đăng nhập: 401 lúc lấy mở lại hộp đăng nhập của `CvatMixin` rồi tự lấy lại (không
 giành chỗ của việc khác đang chờ đăng nhập, `_cvat_after_login`); đổi tài khoản thì `cvat_login` gọi `_report_reset` để màn không hiện dữ liệu của người
 trước. Mọi đường lấy vẫn chỉ đi qua `_report_fetch` và `_report_done`.
 """
@@ -26,10 +26,10 @@ from .cvatapi import CvatError, LoginNeeded
 from .issuereport import Row
 
 REPORT_TITLE = "Báo cáo issue CVAT"
-FILTER_ALL = "Tất cả"                                 # cùng chữ với issuexlsx.ALL
+FILTER_ALL = issuexlsx.ALL
 STATUS_CHOICES = {FILTER_ALL: None, issuereport.STATUS_OPEN: False, issuereport.STATUS_RESOLVED: True}   # ô Trạng thái -> `resolved` của `select`
 NOT_LOGGED_IN = "CVAT báo chưa đăng nhập hoặc phiên đăng nhập đã hết hạn. Hãy đăng nhập lại."
-LOGIN_EXPIRED = "Phiên đăng nhập CVAT đã hết hạn. Hãy đăng nhập lại; báo cáo sẽ tự lấy lại."
+LOGIN_EXPIRED = "Phiên đăng nhập CVAT đã hết hạn. Đăng nhập lại ở hộp vừa mở thì báo cáo tự lấy lại; nếu đóng hộp đó, hãy bấm Làm mới."
 LOGIN_PENDING = "Hãy đăng nhập lại (menu Mở từ CVAT…) rồi bấm Làm mới."      # đã có việc khác chờ đăng nhập: không giành chỗ của nó
 LOGIN_FIRST = "Hãy đăng nhập CVAT (menu Mở từ CVAT…) rồi mở lại Báo cáo issue."
 MESSAGE_CHARS = 120                                   # dòng đầu của mô tả dài hơn ngần này ký tự thì cắt
@@ -63,8 +63,18 @@ def _job_values(job: issuereport.JobInfo, line: issuereport.SummaryLine, ticked:
     return ("☑" if ticked else "☐", name, job.assignee, count + " ⚠" if flagged else count)
 
 
+def _warning_tail(warnings) -> str:
+    """Cảnh báo ở cuối dòng trạng thái: chỉ hiện cảnh báo đầu và số cảnh báo còn lại, để nhiều cảnh báo không đẩy các bảng ra khỏi cửa sổ (đủ cả ở sheet Tổng hợp)."""
+    if not warnings:
+        return ""
+    tail = "  ⚠ " + warnings[0]
+    if len(warnings) > 1:
+        tail += " (và %d cảnh báo khác; xem đủ ở sheet Tổng hợp khi xuất)" % (len(warnings) - 1)
+    return tail
+
+
 def _status_text(report: issuereport.Report, shown: list[Row], excluded) -> str:
-    tail = "  ⚠ " + " ".join(report.warnings) if report.warnings else ""
+    tail = _warning_tail(report.warnings)
     if not report.rows:
         return "Task này chưa có issue nào." + tail
     text = "Đang hiện %d / %d issue" % (len(shown), len(report.rows))
@@ -331,11 +341,14 @@ class ReportMixin:
         ui["excluded"] ^= {job_id}
         self._report_fill()
 
-    def _report_click_job(self, event) -> str:
-        iid = self._report_ui["jobs_tv"].identify_row(event.y)
-        if iid:
+    def _report_click_job(self, event) -> str | None:
+        """Bấm vào một ô của dòng job thì đổi tick và chặn xử lý mặc định; bấm tiêu đề hay đường biên cột thì để Tk làm việc của nó (kéo đổi cỡ cột)."""
+        tv = self._report_ui["jobs_tv"]
+        iid = tv.identify_row(event.y)
+        if tv.identify_region(event.x, event.y) == "cell" and iid:
             self.report_toggle_job(int(iid))
-        return "break"
+            return "break"
+        return None
 
     # ---------- hiện dữ liệu ----------
     def _report_owner(self) -> str | None:
@@ -398,7 +411,8 @@ class ReportMixin:
 
     def report_export(self) -> None:
         """Ghi các dòng đang hiện ra file Excel. Mọi thông tin task, tài khoản, giờ lấy lấy từ dữ liệu đã tải (`ui["report"]`), không từ ô chọn task:
-        ô chọn có thể đã đổi mà chưa lấy. Kết quả và lỗi hiện trên dòng trạng thái của màn."""
+        ô chọn có thể đã đổi mà chưa lấy. Dòng, bộ lọc và dữ liệu được chụp trước hộp chọn nơi lưu và file chỉ ghi từ bản chụp đó. Kết quả và lỗi hiện
+        trên dòng trạng thái của màn, trừ khi màn đã đóng hoặc đã có trạng thái mới hơn."""
         ui = self._report_ui
         if not ui or ui["loading"] or ui["report"] is None:
             return
@@ -406,7 +420,15 @@ class ReportMixin:
         if not rows:
             ui["status"].set("Không có issue nào để xuất.")
             return
-        report = ui["report"]
+        try:
+            issuexlsx.ensure_available()                  # thiếu openpyxl thì báo ngay, không bắt người dùng chọn nơi lưu rồi mới biết
+        except issuexlsx.MissingOpenpyxl as err:
+            ui["status"].set(str(err))
+            return
+        # Chụp mọi thứ file cần TRƯỚC hộp lưu: hộp của hệ điều hành chạy vòng lặp sự kiện riêng, người dùng có thể đổi bộ lọc, đổi task hay đăng nhập
+        # lại trong lúc đó. File ghi đúng những gì đã hiện lúc bấm nút.
+        report, seq, excluded = ui["report"], self._report_seq, frozenset(ui["excluded"])
+        resolved, owner = STATUS_CHOICES.get(ui["status_filter"].get()), self._report_owner()
         path = self.ask_report_path(self._report_dir(), issuexlsx.default_name(report))
         if not path:                                      # người dùng huỷ: hộp trả "" hoặc ()
             return
@@ -414,19 +436,22 @@ class ReportMixin:
         if not path.lower().endswith(".xlsx"):
             path += ".xlsx"
         try:
-            issuexlsx.write(path, report, rows, excluded=ui["excluded"], resolved=STATUS_CHOICES.get(ui["status_filter"].get()),
-                            owner=self._report_owner())
+            issuexlsx.write(path, report, rows, excluded=excluded, resolved=resolved, owner=owner)
         except issuexlsx.MissingOpenpyxl as err:
-            ui["status"].set(str(err))
+            message = str(err)
+        except PermissionError as err:
+            message = "Không ghi được file %s: %s (file có đang mở trong Excel không?)" % (path, err)
         except OSError as err:
-            ui["status"].set("Không ghi được file %s: %s" % (path, err))
+            message = "Không ghi được file %s: %s" % (path, err)
         except Exception as err:                          # lỗi lập trình: để lại dấu vết trên console, người dùng thấy một dòng
             traceback.print_exception(type(err), err, err.__traceback__)
-            ui["status"].set("Lỗi không mong đợi khi xuất: %s: %s" % (type(err).__name__, err))
+            message = "Lỗi không mong đợi khi xuất: %s: %s" % (type(err).__name__, err)
         else:
             self.settings["workspace"]["report_dir"] = os.path.dirname(os.path.abspath(path))
             self.save_settings()
-            ui["status"].set("Đã xuất %d issue ra %s." % (len(rows), path))
+            message = "Đã xuất %d issue ra %s." % (len(rows), path)
+        if self._report_alive() and self._report_seq == seq:   # màn đã đóng hoặc đã có trạng thái mới hơn (lấy lại, đổi tài khoản): dòng trạng thái là của nó
+            ui["status"].set(message)
 
     def report_open_row(self) -> None:
         """Mở link của dòng đang chọn (frame đó trong job, trên CVAT) bằng trình duyệt. Không chọn dòng nào thì không làm gì."""

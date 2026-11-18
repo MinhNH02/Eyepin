@@ -4,6 +4,8 @@ import shutil
 import sys
 import tempfile
 import time
+import traceback
+import types
 import unittest
 from unittest import mock
 
@@ -20,6 +22,23 @@ from test_gui_cvat import CvatGuiCase, buttons  # noqa: E402
 
 
 class ReportCase(CvatGuiCase):
+    def setUp(self):
+        super().setUp()
+        root, had = self.root, "report_callback_exception" in vars(self.root)
+        previous = vars(root).get("report_callback_exception")
+        self.callback_errors = []
+        root.report_callback_exception = lambda *exc: self.callback_errors.append(exc)     # lỗi trong hàm gọi lại của Tk không bị nuốt
+
+        def restore():
+            if had:
+                root.report_callback_exception = previous
+            else:
+                del root.report_callback_exception
+            self.assertEqual(self.callback_errors, [], "hàm gọi lại của Tk ném lỗi:\n" + "".join(
+                "".join(traceback.format_exception(*exc)) for exc in self.callback_errors))
+
+        self.addCleanup(restore)
+
     def serve_report(self):
         """Task 3 "clip": job 7 (hv_03) có issue 1 (frame 87, chưa sửa) và 2 (frame 0, đã sửa, hv_03 mở); job 8 chưa có issue. Task 4: job 9, issue 3."""
         self.serve(FakeJob(7, task_id=3, task_name="clip", assignee="hv_03"), FakeJob(8, task_id=3, task_name="clip"),
@@ -163,6 +182,21 @@ class TestShow(ReportCase):
         self.assertEqual(len(app._report_ui["task_cb"]["values"]), 2)
         self.assertEqual(self.srv.calls["GET /api/issues"], 0)
 
+    def test_status_line_shows_the_first_warning_and_counts_the_rest(self):
+        self.serve_report()
+        self.srv.jobs[8].type = "ground_truth"
+        self.srv.jobs[10] = FakeJob(10, task_id=3, task_name="clip", listed=False)
+        self.srv.issues.append(fake_issue(4, 10, 1))
+        self.srv.comments.append(fake_comment(4, 4, "ở job không xem được"))
+        app = self.make_app()
+        app.cvat_client = self.cl
+        app.show_issue_report(3)
+        self.wait_report(app)
+        status = app._report_ui["status"].get()
+        self.assertIn("Task có 3 job, tài khoản này chỉ xem được 2; issue ở các job còn lại có thể không có trong báo cáo. "
+                      "(và 1 cảnh báo khác; xem đủ ở sheet Tổng hợp khi xuất)", status)
+        self.assertNotIn("Job 10: tài khoản này không xem được job", status)
+
     def test_warning_is_shown_in_status_and_job_list(self):
         self.serve_report()
         self.srv.hidden_issues = {1}
@@ -195,6 +229,20 @@ class TestFilters(ReportCase):
         app.report_toggle_job(7)
         self.assertEqual(self.ids(app), [2, 1])
         self.assertEqual(list(ui["owner_cb"]["values"]), ["Tất cả", "hv_03", "qa_01"])
+
+    def test_only_clicks_on_a_job_cell_toggle(self):
+        app, ui = self.open_report()
+        tv, click = ui["jobs_tv"], types.SimpleNamespace(x=1, y=1)
+        tv.identify_row = lambda y: "7"                                              # dòng nào cũng "tìm thấy": chỉ vùng bấm quyết định
+        tv.identify_region = lambda x, y: "heading"
+        self.assertIsNone(app._report_click_job(click))                              # tiêu đề, đường biên cột: để Tk xử lý (kéo đổi cỡ cột)
+        self.assertNotIn(7, ui["excluded"])
+        tv.identify_region = lambda x, y: "cell"
+        self.assertEqual(app._report_click_job(click), "break")
+        self.assertIn(7, ui["excluded"])
+        tv.identify_row = lambda y: ""                                               # bấm vào ô trống dưới danh sách
+        self.assertIsNone(app._report_click_job(click))
+        self.assertEqual(ui["excluded"], {7})
 
 
 class TestRefresh(ReportCase):
@@ -331,6 +379,67 @@ class TestExport(ReportCase):
             app.report_export()
         self.assertIn("pip install openpyxl", ui["status"].get())
 
+    def test_export_uses_the_filters_captured_before_the_dialog(self):
+        app, ui = self.open_report()
+        out = os.path.join(self.out_dir(), "bc.xlsx")
+
+        def ask(initialdir, initialfile):                                            # hộp lưu của hệ điều hành chạy vòng lặp sự kiện riêng:
+            ui["status_filter"].set("Đã sửa")                                        # người dùng đổi bộ lọc và bỏ tick job trong lúc đó
+            app.report_toggle_job(7)
+            return out
+
+        app.ask_report_path = ask
+        app.report_export()
+        wb = openpyxl.load_workbook(out)
+        self.addCleanup(wb.close)
+        self.assertEqual([c.value for c in wb["Issue"]["E"]], ["Mô tả lỗi", "dòng 1\ndòng 2", "Mí trên mắt trái lệch 3 px"])   # issue 2 rồi 1
+        info = dict(r[:2] for r in wb["Tổng hợp"].iter_rows(values_only=True) if r[0])
+        self.assertEqual(info["Bộ lọc"], "Trạng thái: Tất cả; Người báo: Tất cả")
+        cells = [c for r in wb["Tổng hợp"].iter_rows(values_only=True) for c in r]
+        self.assertFalse(any("không đưa vào báo cáo" in str(c) for c in cells))
+        self.assertEqual(ui["status"].get(), "Đã xuất 2 issue ra %s." % out)
+
+    def test_export_does_not_overwrite_the_status_of_a_newer_state(self):
+        app, ui = self.open_report()
+        out = os.path.join(self.out_dir(), "bc.xlsx")
+        text = "Tài khoản CVAT vừa đổi. Chọn task hoặc bấm Làm mới."
+
+        def ask(initialdir, initialfile):                                            # trong lúc hộp lưu mở, tài khoản đổi và màn bị làm trống
+            app._report_reset(text)
+            return out
+
+        app.ask_report_path = ask
+        app.report_export()
+        self.assertTrue(os.path.isfile(out))
+        self.assertEqual(ui["status"].get(), text)                                   # trạng thái mới hơn thuộc về dòng trạng thái
+        self.assertEqual(app.settings["workspace"]["report_dir"], os.path.dirname(out))
+
+    def test_missing_openpyxl_is_reported_before_the_save_dialog(self):
+        app, ui = self.open_report()
+        asked = []
+        app.ask_report_path = lambda initialdir, initialfile: asked.append(1) or ""
+        gone = issuexlsx.MissingOpenpyxl("Máy chưa có thư viện openpyxl nên chưa xuất được Excel. Cài bằng lệnh: pip install openpyxl")
+        with mock.patch("eyepin.issuexlsx.ensure_available", side_effect=gone):
+            app.report_export()
+        self.assertEqual(asked, [])
+        self.assertIn("pip install openpyxl", ui["status"].get())
+
+    def test_locked_file_gets_a_hint(self):
+        app, ui = self.open_report()
+        app.ask_report_path = lambda initialdir, initialfile: os.path.join(self.out_dir(), "bc.xlsx")
+        with mock.patch("eyepin.issuexlsx.write", side_effect=PermissionError(13, "Access is denied")):
+            app.report_export()
+        text = ui["status"].get()
+        self.assertTrue(text.startswith("Không ghi được file "))
+        self.assertTrue(text.endswith("(file có đang mở trong Excel không?)"))
+
+    def test_unexpected_export_error_is_shown(self):
+        app, ui = self.open_report()
+        app.ask_report_path = lambda initialdir, initialfile: os.path.join(self.out_dir(), "bc.xlsx")
+        with mock.patch("eyepin.issuexlsx.write", side_effect=ValueError("x")), mock.patch("traceback.print_exception"):
+            app.report_export()
+        self.assertEqual(ui["status"].get(), "Lỗi không mong đợi khi xuất: ValueError: x")
+
     def test_export_refused_while_loading(self):
         app, ui = self.open_report()
         asked = []
@@ -429,7 +538,7 @@ class TestLoginChanges(ReportCase):
         app.report_refresh()
         self.wait_report(app)
         self.assertEqual(self.ids(app), [])
-        self.assertEqual(ui["status"].get(), "Phiên đăng nhập CVAT đã hết hạn. Hãy đăng nhập lại; báo cáo sẽ tự lấy lại.")
+        self.assertEqual(ui["status"].get(), "Phiên đăng nhập CVAT đã hết hạn. Đăng nhập lại ở hộp vừa mở thì báo cáo tự lấy lại; nếu đóng hộp đó, hãy bấm Làm mới.")
         self.assertFalse(self.off(ui["refresh_btn"]))
         self.assertIn("cvat", app._dialogs)                                          # hộp đăng nhập sẵn có
         self.srv.fail_401 = False
