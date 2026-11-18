@@ -426,6 +426,19 @@ class ShapeSessionTests(unittest.TestCase):
         self.assertEqual(ev.samples, [])
         self.assertEqual(ev.pins, 0)
 
+    def test_turns_report_names_shape_only_person(self):
+        """M7: lệnh `turns` không gọi người chỉ có shape là "chưa có đối tượng"."""
+        from eyepin import headturn
+        s = self.shapes_at(3, 5)
+        text = headturn.format_report(s, "test")
+        self.assertNotIn("chưa có đối tượng", text)
+        self.assertIn("Người 1 (2 shape, không tính quay đầu)", text)
+        s.pin_eye(0, "matphai", four("matphai", 0), kind="track")
+        self.assertIn(f"Người 1 (đối tượng #{s.obj_ids['matphai']}; 2 shape, không tính quay đầu)", headturn.format_report(s, "test"))
+        t = Session(self.dir)
+        t.pin_eye(0, "mattrai", four("mattrai", 0))
+        self.assertIn(f"Người 1 (đối tượng #{t.obj_ids['mattrai']}):", headturn.format_report(t, "test"))
+
     def test_delete_shape_clears_stale_flags_of_emptied_frame(self):
         s = self.shapes_at(3, 5)
         s.flags[3] = {22: "occluded"}                              # cờ mồ côi của điểm không còn ghim ở frame này

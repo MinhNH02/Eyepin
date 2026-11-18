@@ -1129,7 +1129,8 @@ class Session:
         self.cur = i
 
     def objects(self) -> list[tuple[int, str, int]]:
-        """Mọi đối tượng của job: (chỉ số bộ, nhãn mắt, ID), sắp theo ID tăng dần."""
+        """Mọi đối tượng TRACK của job: (chỉ số bộ, nhãn mắt, ID của cả mắt), sắp theo ID tăng dần. Shape không có trong danh sách này: mỗi
+        shape là đối tượng của riêng một frame, ID ở `Layer.shape_ids` (xem `object_id(label, frame)`, `frame_ids`)."""
         return sorted(((i, l, v) for i, L in enumerate(self.layers) for l, v in L.obj_ids.items()), key=lambda t: t[2])
 
     def other_views(self, f: int) -> list[dict]:

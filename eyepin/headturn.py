@@ -167,8 +167,10 @@ def format_report(session, source: str) -> str:
     lines = [f"{session.title}: {session.n_frames} frame, {len(pins)} frame ghim, {spacing} "
              f"(nguồn điểm ghim: {source})"]
     for i, rep in enumerate(session.turns):
-        ids = ", ".join(f"#{v}" for v in sorted(session.layers[i].obj_ids.values()))
-        who = f"Người {i + 1} (đối tượng {ids})" if ids else f"Người {i + 1} (chưa có đối tượng)"
+        ids = ", ".join(f"#{v}" for v in sorted(session.layers[i].obj_ids.values()))     # ID của mắt track (cả mắt)
+        n_sh = sum(len(d) for d in session.layers[i].shape_ids.values())                 # shape: không bám nên không vào phép đo quay đầu
+        parts = ([f"đối tượng {ids}"] if ids else []) + ([f"{n_sh} shape, không tính quay đầu"] if n_sh else [])
+        who = f"Người {i + 1} ({'; '.join(parts)})" if parts else f"Người {i + 1} (chưa có đối tượng)"
         if rep.status == "few_pins":
             lines.append(f"{who}:")
             lines.append(f"  Chưa đủ ghim để phát hiện (cần ít nhất {MIN_PINS} frame ghim đủ hai mắt, đang có {rep.both_pins}).")
