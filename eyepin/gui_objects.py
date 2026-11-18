@@ -362,9 +362,17 @@ class ObjectsMixin:
                 return
             count, direction, start, end = opts["count"], opts["direction"], opts["start"], opts["end"]
         try:
+            eyes = self.s.propagate_eyes(self.f)
             n = self.s.propagate(self.f, count or 0, direction, start, end)
             where = f"frame {start}–{end}" if start is not None else ("các frame sau" if direction >= 0 else "các frame trước")
-            self.notice = f"Đã nhân nhãn sang {n} frame ({where}); mỗi frame thành frame ghim."
+            shapes = [l for l in eyes if self.s.eye_kind(l) == "shape"]
+            if not shapes:
+                self.notice = f"Đã nhân nhãn sang {n} frame ({where}); mỗi frame thành frame ghim."
+            else:                                                       # mắt shape thành shape mới (không phải frame ghim); mắt kia giữ nguyên
+                parts = [f"{l} thành {'shape mới' if l in shapes else 'keyframe'}" for l in eyes]
+                rest = [l for l in EYES if l not in eyes]
+                tail = f"; {', '.join(rest)} ở các frame đó giữ nguyên" if rest else ""
+                self.notice = f"Đã nhân nhãn sang {n} frame ({where}): {', '.join(parts)} ở mỗi frame{tail}."
         except ValueError as err:
             self.notice = str(err)
         self.refresh()

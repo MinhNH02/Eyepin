@@ -283,6 +283,61 @@ class ShapeSessionTests(unittest.TestCase):
         self.assertEqual(s.flags_at(5), {15: "occluded"})
         self.assertEqual(s.eye_kind("mattrai"), "shape")
 
+    def test_propagate_keeps_other_eyes_shapes(self):
+        """C1: nhân shape mattrai ở frame 3 sang 4, 5 mà matphai có shape riêng ở 4, 5: shape matphai còn nguyên (cả ID); một bước hoàn tác."""
+        s = self.shapes_at(3)
+        for f in (4, 5):
+            s.pin_eye(f, "matphai", four("matphai", f), kind="shape")
+        right = {f: {i: s.pins[f][i] for i in MR.ids} for f in (4, 5)}
+        rid = dict(s.shape_ids["matphai"])
+        undo = len(s._undo)
+        self.assertEqual(s.propagate(3, count=2), 2)
+        self.assertEqual(len(s._undo), undo + 1)
+        for f in (4, 5):
+            self.assertTrue(s.has_shape("matphai", f))
+            self.assertTrue(s.has_shape("mattrai", f))
+            self.assertEqual({i: s.pins[f][i] for i in MR.ids}, right[f])
+            self.assertEqual({i: s.pins[f][i] for i in ML.ids}, {i: s.pins[3][i] for i in ML.ids})
+        self.assertEqual(s.shape_ids["matphai"], rid)
+        self.assertEqual(s.eye_kind("matphai"), "shape")
+        self.assertTrue(s.undo())
+        self.assertEqual(sorted(s.shape_ids["mattrai"]), [3])
+        self.assertEqual(s.shape_ids["matphai"], rid)
+
+    def test_propagate_keeps_other_eyes_track_keyframes_and_outside(self):
+        """C1: matphai track (keyframe 0, Outside cả mắt ở 6) + shape mattrai ở 3, nhân 4..9: keyframe 6 của matphai và cờ Outside còn nguyên."""
+        s = Session(self.dir)
+        s.pin_eye(0, "matphai", four("matphai", 0), kind="track")
+        s.end_eye_here("matphai", 6)
+        s.pin_eye(3, "mattrai", four("mattrai", 3), kind="shape")
+        self.assertEqual(s.eye_keyframes("matphai"), [0, 6])
+        key6 = {i: s.pins[6][i] for i in MR.ids}
+        self.assertEqual(s.propagate(3, start=4, end=9), 6)
+        self.assertEqual(s.eye_keyframes("matphai"), [0, 6])
+        self.assertEqual({i: s.pins[6][i] for i in MR.ids}, key6)
+        for f in (6, 7, 9, 20):
+            fl = s.flags_at(f)
+            self.assertTrue(all(fl.get(i) == "outside" for i in MR.ids), f)
+        self.assertEqual([f for f in range(T.N) if s.has_shape("mattrai", f)], [3, 4, 5, 6, 7, 8, 9])
+        for f in range(4, 10):
+            self.assertFalse(any(i in s.flags.get(f, {}) for i in ML.ids), f)   # shape mattrai ở 3 không có cờ
+
+    def test_propagate_track_eye_keeps_other_eyes_shapes(self):
+        """C1: mattrai track ghim riêng ở 2, matphai có shape ở 4, 5; nhân từ 2: shape matphai còn, kiểu vẫn là shape."""
+        s = Session(self.dir)
+        for f in (4, 5):
+            s.pin_eye(f, "matphai", four("matphai", f), kind="shape")
+        s.pin_eye(2, "mattrai", four("mattrai", 2), kind="track")
+        rid = dict(s.shape_ids["matphai"])
+        right = {f: {i: s.pins[f][i] for i in MR.ids} for f in (4, 5)}
+        self.assertEqual(s.propagate(2, count=3), 3)
+        self.assertEqual(s.eye_kind("matphai"), "shape")
+        self.assertEqual(s.shape_ids["matphai"], rid)
+        for f in (4, 5):
+            self.assertEqual({i: s.pins[f][i] for i in MR.ids}, right[f])
+        self.assertEqual(s.eye_keyframes("mattrai"), [2, 3, 4, 5])
+        self.assertEqual(s.propagate_eyes(2), ["mattrai"])
+
     def test_swap_moves_kind_and_ids(self):
         s = self.shapes_at(3)
         s.pin_eye(0, "matphai", four("matphai", 0))

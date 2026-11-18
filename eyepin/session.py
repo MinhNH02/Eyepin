@@ -515,16 +515,28 @@ class Session:
         self.estimates = {f: {mp[i]: r for i, r in es.items()} for f, es in self.estimates.items()}
         self.recompute()
 
+    def _propagate_source(self, frame: int) -> dict[int, Point]:
+        """Điểm sẽ được nhân từ `frame`: điểm ghim của frame nếu frame là frame ghim, không thì nhãn do tool tính (như trước)."""
+        if frame not in self.labels and frame not in self.pins:
+            raise ValueError("frame này chưa có nhãn để nhân")
+        return dict(self.pins.get(frame) or self.labels[frame].points)
+
+    def propagate_eyes(self, frame: int) -> list[str]:
+        """Các mắt (người đang chọn) mà `propagate` từ `frame` sẽ nhân; mắt khác ở frame đích giữ nguyên. Frame chưa có nhãn thì ValueError."""
+        pts = self._propagate_source(frame)
+        return [l for l, sp in EYES.items() if any(i in pts for i in sp.ids)]
+
     def propagate(self, frame: int, count: int = 0, direction: int = 1, start: int | None = None, end: int | None = None) -> int:
         """Nhân nhãn đang hiển thị ở `frame` sang các frame khác (mỗi frame thành frame ghim, chép cả cờ), như hộp "Confirm propagation" của CVAT:
         `count` bản sao theo `direction` (+1 sang sau, -1 sang trước), hoặc cả khoảng frame [start, end] nếu có start và end.
         Mắt shape nhân thành shape mới (mỗi frame đích một ID riêng, `recompute` cấp), mắt track nhân thành keyframe như cũ.
+        Nhân THEO TỪNG MẮT (`propagate_eyes`): ở frame đích chỉ điểm, cờ và ước lượng của mắt được nhân bị thay; mắt kia (keyframe, cờ Outside,
+        shape của nó) giữ nguyên. Trước đây cả frame đích bị thay nên shape hay keyframe của mắt kia mất mà không báo gì.
         Trả về số frame đã nhân (không tính chính `frame`)."""
         self._guard_qc()
-        if frame not in self.labels and frame not in self.pins:
-            raise ValueError("frame này chưa có nhãn để nhân")
-        pts = dict(self.pins.get(frame) or self.labels[frame].points)
-        flags = self.flags_at(frame)
+        pts = self._propagate_source(frame)
+        moved = {i for l in self.propagate_eyes(frame) for i in EYES[l].ids}
+        flags = {i: k for i, k in self.flags_at(frame).items() if i in moved}
         if start is not None and end is not None:
             lo, hi = sorted((max(0, int(start)), min(self.n_frames - 1, int(end))))
             targets = [g for g in range(lo, hi + 1) if g != frame]
@@ -536,13 +548,16 @@ class Session:
             return 0
         self._push_undo()
         for g in targets:
-            self.pins[g] = dict(pts)
-            self.estimates.pop(g, None)
-            if flags:
-                self.flags[g] = dict(flags)
-            else:
-                self.flags.pop(g, None)
-        self.touched.update({l: time.time() for l in EYES})
+            keep = {i: p for i, p in self.pins.get(g, {}).items() if i not in moved}
+            self.pins[g] = {**keep, **pts}
+            es = {i: r for i, r in self.estimates.get(g, {}).items() if i not in moved}
+            fl = {**{i: k for i, k in self.flags.get(g, {}).items() if i not in moved}, **flags}
+            for store, val in ((self.estimates, es), (self.flags, fl)):
+                if val:
+                    store[g] = val
+                else:
+                    store.pop(g, None)
+        self.touched.update({l: time.time() for l in EYES if set(EYES[l].ids) & moved})
         self.recompute()
         return len(targets)
 

@@ -318,6 +318,32 @@ class ShapeGuiTests(unittest.TestCase):
         self.assertTrue(app.s.has_shape("mattrai", 8))
         self.assertIn("thành shape mới", app.notice)
 
+    def test_propagate_from_app_keeps_other_eyes_shapes(self):
+        """C1 qua `App.object_propagate`: shape mattrai ở 3 nhân sang 4, 5; shape matphai ở 4, 5 còn nguyên; câu báo nói là shape mới."""
+        app = self.make_app()
+        self.draw(app, 3)
+        self.draw(app, 4, label="matphai")
+        self.draw(app, 5, label="matphai")
+        rid = dict(app.s.shape_ids["matphai"])
+        app.go(3)
+        app.select_eye("mattrai", quiet=True)
+        app.object_propagate(count=2)
+        self.assertEqual(app.s.shape_ids["matphai"], rid)
+        for f in (4, 5):
+            self.assertTrue(app.s.has_shape("matphai", f))
+            self.assertTrue(app.s.has_shape("mattrai", f))
+        self.assertIn("shape mới", app.notice)
+        self.assertNotIn("frame ghim", app.notice)
+
+    def test_propagate_track_notice_unchanged(self):
+        app = self.make_app()
+        self.draw(app, 3, kind="track")
+        self.draw(app, 3, label="matphai", kind="track")
+        app.go(3)
+        app.select_eye("mattrai", quiet=True)
+        app.object_propagate(count=2)
+        self.assertEqual(app.notice, "Đã nhân nhãn sang 2 frame (các frame sau); mỗi frame thành frame ghim.")
+
     def test_track_drawing_unchanged(self):
         app = self.make_app()
         self.draw(app, 3, kind="track")
