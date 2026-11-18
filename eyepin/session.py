@@ -34,6 +34,9 @@ MATCH_FLAG = 0.85           # độ khớp dưới mức này thì đánh dấu 
 
 
 QC_MSG = "Job đã có nhãn mắt: đang ở chế độ QC. Muốn sửa thì bấm 'Xoá nhãn mắt cũ và gán lại'."
+SHAPE_KEY_MSG = "shape không có keyframe"
+SHAPE_OUTSIDE_MSG = "shape không có Outside cho cả mắt; đánh Outside từng điểm hoặc xoá shape"
+KINDS = ("track", "shape")
 
 _EYE_UIDS = itertools.count(1)     # mã nội bộ của từng mắt (Layer.eye_uid): tăng mãi, không dùng lại, kể cả giữa các phiên
 
@@ -56,7 +59,11 @@ class Layer:
         self.labels: dict[int, TrackResult] = {}
         self.arrival: dict[int, TrackResult] = {}
         self.need_pin: list[int] = []
-        self.obj_ids: dict[str, int] = {}                           # nhãn mắt -> ID đối tượng
+        self.obj_ids: dict[str, int] = {}                           # nhãn mắt -> ID đối tượng (chỉ mắt kiểu track)
+        # nhãn mắt -> "track" | "shape". Mắt shape: mỗi frame trong `pins` có đủ 8 điểm của nó là một shape độc lập, không bám, không keyframe;
+        # cờ và ước lượng ở frame đó là của chính shape đó. Kiểu cố định khi mắt còn nhãn; mắt không còn nhãn nào thì về "track".
+        self.kind: dict[str, str] = {l: "track" for l in EYES}
+        self.shape_ids: dict[str, dict[int, int]] = {l: {} for l in EYES}   # nhãn mắt -> {frame: ID của shape ở frame đó}
         self.segments: dict = {}                                    # đoạn bám đã tính (bộ nhớ đệm)
         # nhãn mắt -> mã nội bộ ổn định của mắt (có cả khi chưa có ID). Giao diện gắn ẩn riêng / khoá / Pinned vào mã này nên chúng đi
         # theo đúng mắt khi chỉ số người dịch (xoá người giữa), khi đổi label và khi hoàn tác / làm lại (mã nằm trong bản chụp hoàn tác).
@@ -77,6 +84,8 @@ class Session:
     arrival = _layer_attr("arrival")
     need_pin = _layer_attr("need_pin")
     obj_ids = _layer_attr("obj_ids")
+    kind = _layer_attr("kind")
+    shape_ids = _layer_attr("shape_ids")
     eye_uid = _layer_attr("eye_uid")
     _segments = _layer_attr("segments")
 
@@ -279,6 +288,8 @@ class Session:
         """Giống phím K của CVAT: biến frame do tool tính thành frame ghim (nhận nguyên nhãn đang hiển thị và cờ đang hiệu lực);
         nếu đã là frame ghim thì bỏ ghim. Trả True nếu sau thao tác frame là frame ghim."""
         self._guard_qc()
+        if any(self.has_shape(l, f) for l in EYES):
+            raise ValueError(SHAPE_KEY_MSG)
         if f in self.pins:
             self.remove_pin(f)
             return False
@@ -325,7 +336,11 @@ class Session:
         """Cờ Occluded/Outside đang hiệu lực tại frame f: mỗi điểm lấy từ keyframe gần nhất (<= f) của chính mắt chứa nó, như CVAT (mỗi
         phần của skeleton có keyframe riêng). Trước đây lấy theo frame ghim gần nhất của cả hai mắt, nên ghim riêng một mắt làm mất cờ của mắt kia."""
         out: dict[int, str] = {}
-        for spec in EYES.values():
+        for label, spec in EYES.items():
+            if self.kind[label] == "shape":                  # shape: chỉ cờ của chính shape ở frame f, không kế thừa
+                if self.has_shape(label, f):
+                    out.update({i: k for i, k in self.flags.get(f, {}).items() if i in spec.ids})
+                continue
             prior = [g for g, pts in self.pins.items() if g <= f and all(i in pts for i in spec.ids)]
             if prior:
                 out.update({i: k for i, k in self.flags.get(max(prior), {}).items() if i in spec.ids})
@@ -368,8 +383,11 @@ class Session:
 
     def toggle_eye_flag(self, frame: int, label: str, kind: str) -> str | None:
         """Cờ cho cả mắt (như nút Occluded/Outside của cả đối tượng trong CVAT): nếu cả 8 điểm đã mang cờ `kind` thì bỏ hết, không thì đặt cả 8.
-        Frame do tool tính thì thành keyframe của riêng mắt đó. Trả cờ mới hoặc None (đã bỏ, hoặc frame chưa có nhãn của mắt đó)."""
+        Frame do tool tính thì thành keyframe của riêng mắt đó. Trả cờ mới hoặc None (đã bỏ, hoặc frame chưa có nhãn của mắt đó).
+        Mắt shape không có Outside cả mắt (như CVAT): ValueError; Occluded cả mắt chỉ đổi shape ở frame đó."""
         self._guard_qc()
+        if kind == "outside" and self.kind[label] == "shape":
+            raise ValueError(SHAPE_OUTSIDE_MSG)
         made = self._flag_key(frame, label)
         if made is None:
             return None
@@ -421,6 +439,8 @@ class Session:
         shown: dict[int, Point] = {}
         for l in eyes:
             ids = EYES[l].ids
+            if not keyed[l] and self.kind[l] == "shape":     # shape chỉ sửa được ở chính frame của nó; không tạo shape mới bằng kéo
+                raise ValueError(f"frame này không có shape của {l}")
             if not keyed[l] and (frame not in self.labels or not all(i in self.labels[frame].points for i in ids)):
                 raise ValueError("frame này chưa có nhãn do tool tính; hãy ghim một frame đứng trước nó trước")
             src = have if keyed[l] else self.labels[frame].points
@@ -552,23 +572,61 @@ class Session:
         self.recompute()
         return len(hit)
 
+    def delete_shape(self, label: str, frame: int) -> None:
+        """Xoá shape của mắt `label` ở `frame` (như xoá một đối tượng shape trong CVAT): bỏ 8 điểm, cờ và ước lượng của mắt đó ở frame đó;
+        mắt kia và các shape khác không đổi. ID của shape đã xoá không dùng lại. Một bước hoàn tác. Frame không có shape thì ValueError.
+        Bộ đối tượng (người) không còn nhãn nào và job có hơn một người thì bỏ luôn người đó (như `delete_eye`)."""
+        self._guard_qc()
+        if not self.has_shape(label, frame):
+            raise ValueError(f"frame này không có shape của {label}")
+        ids = set(EYES[label].ids)
+        self._push_undo()
+        self.pins[frame] = {i: p for i, p in self.pins[frame].items() if i not in ids}
+        for store in (self.flags, self.estimates):
+            if frame in store:
+                store[frame] = {i: v for i, v in store[frame].items() if i not in ids}
+                if not store[frame]:
+                    del store[frame]
+        if not self.pins[frame]:
+            del self.pins[frame]
+        self.touched[label] = time.time()
+        if not self._eye_has_labels(label):
+            self.eye_uid[label] = next(_EYE_UIDS)                # hết shape: vẽ lại mắt này là đối tượng mới (như delete_eye)
+        if not self.pins and len(self.layers) > 1:
+            del self.layers[self.cur]
+            self.cur = min(self.cur, len(self.layers) - 1)
+        self.recompute()
+
     def end_eye_here(self, label: str, frame: int) -> None:
         """Kết thúc nhãn của `label` từ `frame` trở đi: đánh Outside cả 8 điểm của mắt đó tại `frame`; cờ chép sang các frame sau. Frame chưa là
-        keyframe của mắt đó thì thành keyframe của RIÊNG mắt đó (nhận nhãn đang hiển thị), mắt kia không đổi, như CVAT. Một bước hoàn tác."""
+        keyframe của mắt đó thì thành keyframe của RIÊNG mắt đó (nhận nhãn đang hiển thị), mắt kia không đổi, như CVAT. Một bước hoàn tác.
+        Mắt shape không có lệnh này (ValueError)."""
+        self._guard_qc()
+        if self.kind[label] == "shape":
+            raise ValueError(SHAPE_OUTSIDE_MSG)
         if self._flag_key(frame, label) is None:             # _flag_key đã gồm bước hoàn tác và chỉ ghim mắt `label`
             raise ValueError("frame này chưa có nhãn của mắt đó")
         self.flags.setdefault(frame, {}).update({i: "outside" for i in EYES[label].ids})
         self.touched[label] = time.time()
         self.recompute()
 
-    def pin_eye(self, frame: int, label: str, four: dict[int, Point]) -> None:
+    def pin_eye(self, frame: int, label: str, four: dict[int, Point], kind: str | None = None) -> None:
         """Ghim riêng mắt `label` ở `frame` từ 4 điểm ghim đã biết vai trò (mắt vẽ trong bảng Vẽ mắt rồi Apply). Không gán lại vai trò,
         chỉ kiểm hình (ValueError nếu không giống một mắt); không biến nhãn do tool tính của mắt kia ở frame này thành keyframe, như vẽ
-        một skeleton trong CVAT."""
+        một skeleton trong CVAT.
+        `kind` ("track" | "shape"): mắt chưa có nhãn nào thì nhận kiểu đó; None thì giữ kiểu đang có. Mắt đang có nhãn mà `kind` khác kiểu
+        hiện tại thì ValueError và phiên không đổi gì. Mắt shape: ghim ở `frame` là shape ở frame đó (frame đã có shape thì vẽ đè, giữ ID)."""
         self._guard_qc()
         spec = EYES[label]
+        cur = self.kind[label]
+        kind = cur if kind is None else kind
+        if kind not in KINDS:
+            raise ValueError(f"kiểu nhãn không hợp lệ: {kind!r} (cần 'track' hoặc 'shape')")
+        if kind != cur and self._eye_has_labels(label):
+            raise ValueError(f"{label} của người này đang là {cur}; xoá nhãn đó hoặc thêm người mới (+) để vẽ kiểu khác")
         validate_four(spec, four)
         self._push_undo()
+        self.kind[label] = kind
         base = {i: p for i, p in self.pins.get(frame, {}).items() if i not in spec.ids}
         base.update(derive(spec, {i: four[i] for i in spec.pins}))
         self.pins[frame] = base
@@ -644,7 +702,9 @@ class Session:
     # ---- hoàn tác ----
     def _snapshot(self) -> dict:
         return {"layers": [{"pins": copy.deepcopy(L.pins), "flags": copy.deepcopy(L.flags), "estimates": copy.deepcopy(L.estimates),
-                            "ids": dict(L.obj_ids), "uid": dict(L.eye_uid)} for L in self.layers], "cur": self.cur, "next_id": self.next_id}
+                            "ids": dict(L.obj_ids), "uid": dict(L.eye_uid), "kind": dict(L.kind),
+                            "shape_ids": {l: dict(d) for l, d in L.shape_ids.items()}} for L in self.layers],
+                "cur": self.cur, "next_id": self.next_id}
 
     def _restore(self, snap: dict) -> None:
         while len(self.layers) < len(snap["layers"]):
@@ -653,6 +713,8 @@ class Session:
         for L, d in zip(self.layers, snap["layers"]):                    # dùng lại Layer cũ để giữ bộ nhớ đệm đoạn bám
             L.pins, L.flags, L.estimates, L.obj_ids = d["pins"], d["flags"], d["estimates"], dict(d["ids"])
             L.eye_uid = dict(d.get("uid", L.eye_uid))                   # mã mắt theo bản chụp: trạng thái giao diện về đúng mắt (B08, B09)
+            L.kind = dict(d.get("kind") or {l: "track" for l in EYES})  # kiểu và ID shape theo bản chụp: xoá shape rồi hoàn tác trả đúng ID cũ
+            L.shape_ids = {l: dict(v) for l, v in (d.get("shape_ids") or {l: {} for l in EYES}).items()}
         self.cur, self.next_id = min(snap["cur"], len(self.layers) - 1), snap["next_id"]
         self.recompute()
 
@@ -666,22 +728,61 @@ class Session:
         self.next_id = 1 + max(every + list(self.obj_ids.values()) + [0])
 
     def _assign_ids(self) -> None:
-        for label in EYES:
-            if label not in self.obj_ids and any(all(i in pts for i in EYES[label].ids) for pts in self.pins.values()):
+        """Cấp ID cho đối tượng mới của Layer đang chọn. Mắt track: một ID cho cả mắt khi nó có keyframe đầu tiên. Mắt shape: mỗi shape một ID,
+        cấp theo frame tăng dần; mục của frame không còn shape bị bỏ (ID đó không dùng lại). Mắt không còn nhãn nào thì kiểu về "track"."""
+        for label, spec in EYES.items():
+            if not self._eye_has_labels(label):
+                self.kind[label] = "track"
+            if self.kind[label] == "shape":
+                self.obj_ids.pop(label, None)                    # mắt shape không có ID của cả mắt
+                have = self._shape_frames(label)
+                got = self.shape_ids[label]
+                for f in [f for f in got if f not in have]:
+                    del got[f]
+                for f in have:
+                    if f not in got:
+                        got[f] = self.next_id
+                        self.next_id += 1 + len(spec.ids)
+                continue
+            if self.shape_ids[label]:
+                self.shape_ids[label] = {}                       # mắt vừa hết shape và về track: bỏ ID shape cũ (không dùng lại)
+            if label not in self.obj_ids and any(all(i in pts for i in spec.ids) for pts in self.pins.values()):
                 self.obj_ids[label] = self.next_id
-                self.next_id += 1 + len(EYES[label].ids)         # CVAT đánh số cả 8 điểm con: skeleton thứ nhất là 1, thứ hai là 10, rồi 19...
+                self.next_id += 1 + len(spec.ids)                # CVAT đánh số cả 8 điểm con: skeleton thứ nhất là 1, thứ hai là 10, rồi 19...
 
-    def object_id(self, label: str) -> int | None:
+    def object_id(self, label: str, frame: int | None = None) -> int | None:
+        """ID đối tượng của mắt `label`: mắt track thì ID của cả mắt (bỏ qua `frame`); mắt shape thì ID của shape ở `frame` (None nếu không có)."""
+        if self.kind[label] == "shape":
+            return None if frame is None else self.shape_ids[label].get(frame)
         return self.obj_ids.get(label)
 
+    def eye_kind(self, label: str) -> str:
+        """Kiểu của mắt `label` của người đang chọn: "track" hoặc "shape"."""
+        return self.kind[label]
+
+    def has_shape(self, label: str, frame: int) -> bool:
+        """Mắt `label` của người đang chọn là shape và có shape ở `frame`."""
+        return self.kind[label] == "shape" and all(i in self.pins.get(frame, {}) for i in EYES[label].ids)
+
+    def _shape_frames(self, label: str) -> list[int]:
+        return sorted(f for f, pts in self.pins.items() if all(i in pts for i in EYES[label].ids))
+
+    def _eye_has_labels(self, label: str) -> bool:
+        ids = set(EYES[label].ids)
+        return any(ids & set(pts) for pts in self.pins.values())
+
     def eye_keyframes(self, label: str) -> list[int]:
-        """Frame ghim (keyframe) của riêng mắt `label`."""
+        """Frame ghim (keyframe) của riêng mắt `label`. Mắt shape không có keyframe: trả []."""
+        if self.kind[label] == "shape":
+            return []
         return sorted(f for f, pts in self.pins.items() if all(i in pts for i in EYES[label].ids))
 
     def toggle_eye_key(self, label: str, f: int) -> bool:
         """Phím K của CVAT cho một đối tượng: nếu `f` là keyframe của mắt này thì bỏ keyframe riêng của nó (mắt kia không đổi);
-        không thì biến nhãn do tool tính tại `f` thành keyframe của riêng mắt này. Trả True nếu sau thao tác là keyframe."""
+        không thì biến nhãn do tool tính tại `f` thành keyframe của riêng mắt này. Trả True nếu sau thao tác là keyframe. Mắt shape: ValueError."""
         self._guard_qc()
+        if self.kind[label] == "shape":
+            raise ValueError(SHAPE_KEY_MSG)
         ids = set(EYES[label].ids)
         if f in self.pins and ids <= set(self.pins[f]):
             self._push_undo()
@@ -826,7 +927,8 @@ class Session:
 
     def _recompute_current(self) -> None:
         """Tính lại nhãn do tool bám của Layer đang chọn, riêng từng mắt: mỗi mắt có các frame ghim (keyframe) riêng và từ mỗi keyframe bám tiến tới keyframe kế của
-        chính mắt đó. Đoạn nào không đổi (cùng điểm ghim, cùng frame kế) thì dùng lại kết quả cũ nên sửa một keyframe chỉ tính lại một đoạn."""
+        chính mắt đó. Đoạn nào không đổi (cùng điểm ghim, cùng frame kế) thì dùng lại kết quả cũ nên sửa một keyframe chỉ tính lại một đoạn.
+        Mắt shape không bám: mỗi shape là nhãn của đúng frame đó (độ khớp 1,0), không vào `need_pin`, không có `arrival`."""
         self._assign_ids()
         if not self.pins:
             self.labels, self.arrival, self.need_pin, self._segments = {}, {}, [], {}
@@ -835,6 +937,10 @@ class Session:
         per_arrival: dict[int, list[TrackResult]] = {}
         fresh: dict = {}
         for label, spec in EYES.items():
+            if self.kind[label] == "shape":                  # shape: không bám, chỉ có nhãn ở chính frame của nó, độ khớp 1,0, không có arrival
+                for f in self._shape_frames(label):
+                    per_frame.setdefault(f, []).append(TrackResult(f, {i: self.pins[f][i] for i in spec.ids}, 1.0, {label: 1.0}))
+                continue
             have = self.eye_keyframes(label)
             for k, f0 in enumerate(have):
                 f1 = have[k + 1] if k + 1 < len(have) else self.n_frames
