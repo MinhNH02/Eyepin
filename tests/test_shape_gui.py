@@ -372,6 +372,54 @@ class ShapeGuiTests(unittest.TestCase):
         self.assertEqual(sorted(app.s.pins), [0])
         self.assertEqual(app.notice, "Đã xoá 2 keyframe sau frame 4.")
 
+    # ---------- I3: câu báo gửi / xuất có đếm shape ----------
+    def sent_notice(self, keyframes, shapes):
+        """Câu báo của `_do_send` khi gửi xong và khớp (việc nền giả chạy ngay, không chạm mạng)."""
+        from eyepin.cvatsync import SendPlan, SendResult
+        from eyepin.qc import EyeLabels
+        app = self.make_app()
+        app._run_bg = lambda fn, done, text="": done(SendResult(True, "ok", [], None), None)
+        app.save_work = lambda auto=False: True
+        app._do_send(SendPlan(False, EyeLabels(), False, keyframes, "CVAT for images 1.1", job_id=7, shapes=shapes))
+        return app.notice
+
+    def test_send_notice_counts_shapes(self):
+        self.assertEqual(self.sent_notice(0, 2),
+                         "Đã gửi 2 shape mắt lên job #7; đối chiếu khớp với CVAT (vị trí, cờ Occluded/Outside, keyframe, shape).")
+        self.assertEqual(self.sent_notice(5, 2),
+                         "Đã gửi 5 keyframe và 2 shape mắt lên job #7; đối chiếu khớp với CVAT (vị trí, cờ Occluded/Outside, keyframe, shape).")
+
+    def test_send_notice_track_only_unchanged(self):
+        self.assertEqual(self.sent_notice(5, 0),
+                         "Đã gửi 5 keyframe lên job #7; đối chiếu khớp với CVAT (vị trí, cờ Occluded/Outside, keyframe).")
+
+    def exported_text(self, app):
+        from unittest import mock
+        out = os.path.join(tempfile.mkdtemp(prefix="eyepin_export_"), "out.xml")
+        self.addCleanup(shutil.rmtree, os.path.dirname(out), True)
+        shown = []
+        with mock.patch("tkinter.filedialog.asksaveasfilename", return_value=out), \
+                mock.patch("tkinter.messagebox.showinfo", side_effect=lambda title, text, **kw: shown.append(text)):
+            app.export()
+        return shown[0].split("\n")[0]
+
+    def test_export_notice_counts_shapes(self):
+        app = self.make_app()
+        self.draw(app, 3)
+        self.draw(app, 5)
+        self.assertEqual(self.exported_text(app), f"Đã ghi 2 shape cho {T.N - 3} frame.")
+        self.draw(app, 0, label="matphai", kind="track")
+        k = app.s.export(os.path.join(self.dir, "_k.xml"))["keyframes"]
+        os.remove(os.path.join(self.dir, "_k.xml"))
+        self.assertEqual(self.exported_text(app), f"Đã ghi {k} keyframe và 2 shape cho {T.N} frame.")
+
+    def test_export_notice_track_only_unchanged(self):
+        app = self.make_app()
+        self.draw(app, 0, kind="track")
+        k = app.s.export(os.path.join(self.dir, "_k.xml"))["keyframes"]
+        os.remove(os.path.join(self.dir, "_k.xml"))
+        self.assertEqual(self.exported_text(app), f"Đã ghi {k} keyframe cho {T.N} frame.")
+
     def test_track_drawing_unchanged(self):
         app = self.make_app()
         self.draw(app, 3, kind="track")

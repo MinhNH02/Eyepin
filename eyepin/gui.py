@@ -2320,7 +2320,10 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
                                          initialfile="eyepin_import.xml")
         if p:
             info = self.s.export(p)
-            messagebox.showinfo("EyePin", f"Đã ghi {info['keyframes']} keyframe cho {info['frames']} frame.\n{p}\n\n"
+            n_sh = info.get("shapes", 0)
+            what = (f"{info['keyframes']} keyframe" if info["keyframes"] or not n_sh else "") \
+                + (" và " if info["keyframes"] and n_sh else "") + (f"{n_sh} shape" if n_sh else "")
+            messagebox.showinfo("EyePin", f"Đã ghi {what} cho {info['frames']} frame.\n{p}\n\n"
                                           "File chứa mọi nhãn của job; import vào job sẽ thay thế toàn bộ nhãn cũ.")
 
     def on_list(self, _):

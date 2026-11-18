@@ -633,7 +633,12 @@ class CvatMixin:
             elif res.ok:
                 s.dirty = True                                  # mốc `updated` mới và cờ `unsent` = False vào file phiên
                 self.save_work(auto=True)
-                self.notice = f"Đã gửi {plan.keyframes} keyframe lên job #{plan.job_id}; đối chiếu khớp với CVAT (vị trí, cờ Occluded/Outside, keyframe)."
+                if plan.shapes:                                 # có shape: nói cả số shape (job chỉ có shape thì không nói "0 keyframe")
+                    what = f"{plan.keyframes} keyframe và {plan.shapes} shape mắt" if plan.keyframes else f"{plan.shapes} shape mắt"
+                    self.notice = (f"Đã gửi {what} lên job #{plan.job_id}; "
+                                   "đối chiếu khớp với CVAT (vị trí, cờ Occluded/Outside, keyframe, shape).")
+                else:
+                    self.notice = f"Đã gửi {plan.keyframes} keyframe lên job #{plan.job_id}; đối chiếu khớp với CVAT (vị trí, cờ Occluded/Outside, keyframe)."
                 self._send_finished(True)
             else:
                 self.notice = res.message
