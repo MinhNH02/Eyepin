@@ -308,17 +308,17 @@ def write_eyes(ann: Annotations, out_path: str, *, new_tracks: dict[str, EyeTrac
                 raise ValueError(f"frame {f} nằm ngoài job")
             tr.append(_skeleton_el(et.keys[f], spec.ids, True, None, to_job(f)))
         root.append(tr)
-    if isinstance(new_shapes, dict):
+    if isinstance(new_shapes, dict):                      # dạng dict: frame là khoá dict (cả id lẫn tên <image>), không phải key.frame
         shape_list = [EyeShape(label, key) for label, per_frame in new_shapes.items() for key in per_frame.values()]
-        job_frames = [jf for per_frame in new_shapes.values() for jf in (to_job(f) for f in per_frame)]
+        idx_frames = [f for per_frame in new_shapes.values() for f in per_frame]
     else:
         shape_list = list(new_shapes or [])
-        job_frames = [to_job(sh.key.frame) for sh in shape_list]
+        idx_frames = [sh.key.frame for sh in shape_list]
     by_id = {int(im.get("id")): im for im in root.findall("image")}
     created: dict[int, ET.Element] = {}
-    for sh, jf in zip(shape_list, job_frames):
+    for sh, f in zip(shape_list, idx_frames):
+        jf = to_job(f)
         if jf not in by_id:
-            f = sh.key.frame
             if frame_names is None or not 0 <= f < len(frame_names) or jf is None:
                 raise KeyError(f"File không có <image id={jf}>; shape mắt chỉ ghi được khi export ở dạng 'CVAT for images'")
             attrs = {"id": str(jf), "name": frame_names[f]}

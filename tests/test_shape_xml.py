@@ -116,6 +116,12 @@ class ShapeXmlTests(unittest.TestCase):
         root = self.write(ann, {"mattrai": {3: make_key(3)}})
         self.assertEqual(len(root.find("image").findall("skeleton")), 1)
 
+    def test_dict_form_names_image_by_dict_key(self):
+        """M5: dạng dict {nhãn: {frame: EyeKey}}: id và tên của <image> mới đều theo khoá dict (không lấy tên theo `key.frame`)."""
+        root = self.write(empty_annotations(), {"mattrai": {3: make_key(1)}}, frame_names=NAMES, size=(T.W, T.H))
+        im = root.find("image")
+        self.assertEqual((im.get("id"), im.get("name")), ("3", "f003.png"))
+
 
 if __name__ == "__main__":
     unittest.main()
