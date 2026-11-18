@@ -1160,11 +1160,12 @@ class Session:
         return sorted(out, key=lambda t: int(t.attrs.get("id", 10 ** 9)))
 
     def export(self, out_path: str, tol: float = KEYFRAME_TOL) -> dict:
-        """Ghi file import có cả track lẫn shape mắt. Không có cả hai thì ném ValueError("Chưa có frame ghim nào")."""
-        try:
-            tracks = self.build_all_tracks(tol)
-        except ValueError:
-            tracks = []
+        """Ghi file import có cả track lẫn shape mắt. Không có cả hai thì ném ValueError("Chưa có frame ghim nào").
+        Track chỉ được coi là rỗng khi không người nào có mắt kiểu track còn nhãn (job chỉ có shape); có mắt track mà dựng track lỗi
+        (ví dụ nhãn do tool tính bị mất) thì lỗi được ném lên, không ghi file thiếu track."""
+        has_track = any(L.kind[l] == "track" and any(all(i in pts for i in sp.ids) for pts in L.pins.values())
+                        for L in self.layers for l, sp in EYES.items())
+        tracks = self.build_all_tracks(tol) if has_track else []
         shapes = self.build_shapes()
         if not tracks and not shapes:
             raise ValueError("Chưa có frame ghim nào")

@@ -442,6 +442,18 @@ class ShapeSessionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             s.build_all_tracks()
 
+    def test_export_does_not_hide_track_errors(self):
+        """I4: người 1 có shape, người 2 có track mà nhãn do tool tính bị mất (trạng thái cũ): xuất phải báo lỗi, không ghi file thiếu track."""
+        s = Session(self.dir)
+        s.pin_eye(3, "mattrai", four("mattrai", 3), kind="shape")
+        s.add_layer()
+        s.pin_eye(0, "matphai", four("matphai", 0), kind="track")
+        s.layers[1].labels = {}
+        out = self.out_path("stale.xml")
+        with self.assertRaises(ValueError):
+            s.export(out)
+        self.assertFalse(os.path.exists(out))
+
     def test_build_tracks_skips_shape_eyes(self):
         s = self.shapes_at(3, 5)
         self.assertEqual(s.build_tracks(), {})
