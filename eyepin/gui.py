@@ -41,7 +41,7 @@ from .gui_login import FrontDoor, LoginMixin
 from .gui_objects import LayerSet, ObjectSet, ObjectsMixin
 from .gui_sidebar import ObjectList
 from .icons import BAR_SIZE, IconButton, Tooltip
-from .session import Session
+from .session import QC_MSG, Session
 
 MAIN = (960, 460)
 THUMB = (300, 140)
@@ -172,6 +172,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         self.drag_resize = None           # (nhãn mắt, tay cầm "nw".."w", hộp lúc đầu, điểm bấm, điểm hiện tại) khi kéo cạnh/góc khung chọn
         self.draft = None                 # mắt đang vẽ dở, chưa Apply: {"label": nhãn mắt, "four": {id điểm ghim: toạ độ}}
         self.draw_label = None            # label đã chọn trong bảng Vẽ mắt
+        self.draw_kind = "track"          # kiểu ("track" | "shape") của lần begin_draw gần nhất; bảng Vẽ mắt chọn sẵn kiểu này cho mắt chưa có nhãn
         self.draft_drag = None            # id điểm của bản nháp đang kéo
         self._box0 = None                 # góc đầu (toạ độ frame) khi kéo khung để vẽ mắt
         self.rot_frames: dict[int, int] = {}
@@ -1038,8 +1039,12 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
             self.notice = "Chưa sao chép nhãn nào."
         else:
             try:
+                one = next((l for l, sp in EYES.items() if set(self.clipboard) == set(sp.ids)), None)
                 self.s.paste_points(self.f, self.clipboard)
-                self.notice = f"Đã dán nhãn vào frame {self.f}; frame này thành frame ghim."
+                if one is not None and self.s.eye_kind(one) == "shape":
+                    self.notice = f"Đã dán nhãn vào frame {self.f} thành shape mới."
+                else:
+                    self.notice = f"Đã dán nhãn vào frame {self.f}; frame này thành frame ghim."
             except ValueError as err:
                 self.notice = str(err)
         self.refresh()
@@ -1548,31 +1553,54 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
         default = next((l for l in EYES if l not in here), self._selected()[0] or "mattrai")
         self._draw_label_values = [DRAW_LABELS[l] for l in EYES]
         self._draw_label_var = tk.StringVar(value=DRAW_LABELS[default])
-        self._draw_kind_var = tk.StringVar(value="track")
+        self._draw_kind_var = tk.StringVar(value=self.draw_kind_choice(default)[0])
+        self._draw_kind_note = tk.StringVar()
         ttk.Label(d, text="Label").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 4))
-        ttk.Combobox(d, textvariable=self._draw_label_var, values=self._draw_label_values, state="readonly",
-                     width=24).grid(row=0, column=1, columnspan=2, sticky="we", padx=(0, 10), pady=(10, 4))
+        combo = ttk.Combobox(d, textvariable=self._draw_label_var, values=self._draw_label_values, state="readonly", width=24)
+        combo.grid(row=0, column=1, columnspan=2, sticky="we", padx=(0, 10), pady=(10, 4))
         ttk.Label(d, text="Kiểu").grid(row=1, column=0, sticky="w", padx=10)
-        ttk.Radiobutton(d, text="Track", value="track", variable=self._draw_kind_var).grid(row=1, column=1, sticky="w")
-        shape = ttk.Radiobutton(d, text="Shape (chưa hỗ trợ)", value="shape", variable=self._draw_kind_var)
-        shape.state(["disabled"])
-        shape.grid(row=1, column=2, sticky="w", padx=(0, 10))
+        self._draw_radios = {
+            "track": ttk.Radiobutton(d, text="Track", value="track", variable=self._draw_kind_var),
+            "shape": ttk.Radiobutton(d, text="Shape", value="shape", variable=self._draw_kind_var)}
+        self._draw_radios["track"].grid(row=1, column=1, sticky="w")
+        self._draw_radios["shape"].grid(row=1, column=2, sticky="w", padx=(0, 10))
+        ttk.Label(d, textvariable=self._draw_kind_note, wraplength=300, justify="left").grid(row=2, column=0, columnspan=3, sticky="w", padx=10)
+        combo.bind("<<ComboboxSelected>>", lambda e: self._draw_label_changed())
+        self._draw_label_changed()
 
         def go(method):
             label = self._draw_label_var.get().split()[0]
+            kind = self._draw_kind_var.get()
             d.destroy()
-            self.begin_draw(label, method)
-        ttk.Label(d, text="Vẽ bằng").grid(row=2, column=0, sticky="w", padx=10, pady=(8, 10))
-        ttk.Button(d, text="Bấm 4 điểm", command=lambda: go("points")).grid(row=2, column=1, sticky="we", pady=(8, 10))
-        ttk.Button(d, text="Kéo khung", command=lambda: go("box")).grid(row=2, column=2, sticky="we", padx=(0, 10), pady=(8, 10))
+            self.begin_draw(label, method, kind=kind)
+        ttk.Label(d, text="Vẽ bằng").grid(row=3, column=0, sticky="w", padx=10, pady=(8, 10))
+        ttk.Button(d, text="Bấm 4 điểm", command=lambda: go("points")).grid(row=3, column=1, sticky="we", pady=(8, 10))
+        ttk.Button(d, text="Kéo khung", command=lambda: go("box")).grid(row=3, column=2, sticky="we", padx=(0, 10), pady=(8, 10))
         d.bind("<Escape>", lambda e: d.destroy())
         d.geometry(f"+{self.root.winfo_rootx() + 70}+{self.root.winfo_rooty() + 140}")
 
+    def draw_kind_choice(self, label: str) -> tuple[str, bool]:
+        """(kiểu chọn sẵn, có khoá không) cho mắt `label` của người đang chọn trong bảng Vẽ mắt. Mắt đã có nhãn thì kiểu của nó và khoá
+        (một mắt chỉ có một kiểu, `Session.pin_eye` từ chối đổi); mắt chưa có nhãn thì kiểu của lần vẽ gần nhất (`draw_kind`) và không khoá."""
+        if self.s and any(set(EYES[label].ids) & set(pts) for pts in self.s.pins.values()):
+            return self.s.eye_kind(label), True
+        return self.draw_kind, False
+
+    def _draw_label_changed(self):
+        """Đổi label trong bảng Vẽ mắt: chọn lại kiểu theo `draw_kind_choice`; khi khoá thì tắt radio kia và giải thích."""
+        kind, locked = self.draw_kind_choice(self._draw_label_var.get().split()[0])
+        self._draw_kind_var.set(kind)
+        for k, radio in self._draw_radios.items():
+            radio.state(["disabled"] if locked and k != kind else ["!disabled"])
+        self._draw_kind_note.set(f"Mắt này đang là {kind}. Muốn vẽ kiểu khác: xoá nhãn của nó hoặc thêm người mới (+)." if locked else "")
+
     @edit_command
-    def begin_draw(self, label: str, method: str = "points"):
-        """Bắt đầu vẽ mắt `label`: method "points" = bấm 4 điểm (2 khoé, giữa hai mí, thứ tự tuỳ ý); "box" = kéo khung, mắt mẫu hiện ra."""
+    def begin_draw(self, label: str, method: str = "points", kind: str | None = None):
+        """Bắt đầu vẽ mắt `label`: method "points" = bấm 4 điểm (2 khoé, giữa hai mí, thứ tự tuỳ ý); "box" = kéo khung, mắt mẫu hiện ra.
+        `kind` ("track" | "shape"): None thì lấy kiểu chọn sẵn của `draw_kind_choice`; kiểu dùng được nhớ ở `draw_kind` cho lần vẽ sau."""
         if not self.s:
             return
+        self.draw_kind = kind or self.draw_kind_choice(label)[0]
         self.playing = False
         self.draft, self.draft_drag, self._box0 = None, None, None
         self.draw_label = label
@@ -1583,18 +1611,22 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
 
     @edit_command
     def apply_draft(self):
-        """Nút Apply: ghim mắt vừa vẽ thành keyframe (track) của riêng mắt đó ở frame này; tool bám nó sang các frame sau."""
+        """Nút Apply: ghim mắt vừa vẽ ở frame này. Kiểu track: thành keyframe của riêng mắt đó, tool bám nó sang các frame sau.
+        Kiểu shape: một nhãn chỉ ở frame này, không bám."""
         if not (self.s and self.draft):
             return
         label, four = self.draft["label"], self.draft["four"]
         try:
-            self.s.pin_eye(self.f, label, dict(four))
+            self.s.pin_eye(self.f, label, dict(four), kind=self.draw_kind)
         except ValueError as err:
             self.notice = f"Không ghim được: {err}. Kéo lại các điểm rồi bấm Apply, hoặc Esc để huỷ."
             self.refresh()
             return
         self.draft, self.draft_drag = None, None
-        self.notice = f"Đã ghim {label} ở frame {self.f} (track): tool bám mắt này sang các frame sau."
+        if self.draw_kind == "shape":
+            self.notice = f"Đã vẽ shape {label} ở frame {self.f} (không bám sang frame khác)."
+        else:
+            self.notice = f"Đã ghim {label} ở frame {self.f} (track): tool bám mắt này sang các frame sau."
         self.refresh()
         self.select_eye(label, quiet=True)
 
@@ -2168,13 +2200,22 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin):
             self.refresh()
             return
         was_key = self.f in self.s.eye_keyframes(target)
-        if pid is not None:
-            new = self.s.toggle_flag(self.f, pid, kind)
-            what = f"Điểm {pid} ({target})"
-        else:
-            new = self.s.toggle_eye_flag(self.f, target, kind)
-            what = f"{target}: cả 8 điểm"
-        if not was_key and self.f not in self.s.eye_keyframes(target):
+        try:
+            if pid is not None:
+                new = self.s.toggle_flag(self.f, pid, kind)
+                what = f"Điểm {pid} ({target})"
+            else:
+                new = self.s.toggle_eye_flag(self.f, target, kind)
+                what = f"{target}: cả 8 điểm"
+        except ValueError as err:                                 # mắt shape không có Outside cả mắt; QC_MSG vẫn để `edit_command` xử lý
+            if str(err) == QC_MSG:
+                raise
+            self.notice = str(err)
+            self.refresh()
+            return
+        if self.s.eye_kind(target) == "shape":
+            self.notice = f"{what}: " + (name if new else f"bỏ {name}")
+        elif not was_key and self.f not in self.s.eye_keyframes(target):
             self.notice = f"Frame này chưa có nhãn của {target}; hãy vẽ hoặc ghim mắt đó trước."
         else:
             self.notice = f"{what}: " + (name if new else f"bỏ {name}") + ("" if was_key else f". Frame này đã thành keyframe của {target}.")

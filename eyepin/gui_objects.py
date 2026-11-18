@@ -405,8 +405,12 @@ class ObjectsMixin:
             self.notice = f"{label} đang bị khoá; bấm Shift+Del để xoá cả mắt khoá."
         else:
             try:
-                n = self.s.delete_eye(label)
-                self.notice = f"Đã xoá {label} ở {n} frame ghim (Ctrl+Z để hoàn tác). Bấm {self.kl('draw_eye')} để vẽ lại mắt này."
+                if self.s.eye_kind(label) == "shape":                # shape chỉ ở một frame: Del xoá shape ở frame này, không phải cả mắt
+                    self.s.delete_shape(label, self.f)
+                    self.notice = f"Đã xoá shape {label} ở frame {self.f} (Ctrl+Z để hoàn tác)."
+                else:
+                    n = self.s.delete_eye(label)
+                    self.notice = f"Đã xoá {label} ở {n} frame ghim (Ctrl+Z để hoàn tác). Bấm {self.kl('draw_eye')} để vẽ lại mắt này."
             except ValueError as err:
                 self.notice = str(err)
         self.refresh()

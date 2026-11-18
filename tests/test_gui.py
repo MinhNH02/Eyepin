@@ -738,7 +738,7 @@ class GuiTests(unittest.TestCase):
         self.assertEqual(app._draw_label_var.get().split()[0], "mattrai")       # frame chưa có mắt nào: mặc định mắt trái
         self.assertEqual(app._draw_kind_var.get(), "track")
         shape = [w for w in self._walk(d) if w.winfo_class() == "TRadiobutton" and "Shape" in str(w.cget("text"))]
-        self.assertTrue(shape and "disabled" in shape[0].state())
+        self.assertTrue(shape and "disabled" not in shape[0].state())     # Shape đã dùng được (bản shape, design/2026-11-18-shape-design.md 6.2)
         app._draw_label_var.set(app._draw_label_values[1])
         box_btn = [w for w in self._walk(d) if w.winfo_class() == "TButton" and "Kéo khung" in str(w.cget("text"))][0]
         box_btn.invoke()
