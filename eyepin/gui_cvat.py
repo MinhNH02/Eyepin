@@ -30,6 +30,12 @@ TITLE = "EyePin — gán nhãn mắt cho CVAT"
 RESTORE_LIMIT = ("Giới hạn của việc khôi phục: bản chụp là bản xuất nền (các nhãn khác mắt) trước khi gửi. Nhãn mắt cũ chỉ được trả lại đúng loại khi "
                  "định dạng nền cũng là định dạng hiện nhãn mắt cũ; ví dụ nền \"CVAT for images\" trả track mắt cũ về thành shape ở mọi frame. "
                  "Nhãn mắt cũ đã được bạn đồng ý xoá lúc gửi; khôi phục chủ yếu để lấy lại nhãn nền.")
+RESTORE_LIMIT_ADOPTED = "Khôi phục đưa job về đúng nhãn trên CVAT ngay trước lần gửi này (shape mắt và nhãn khác)."     # phiên đã nạp shape: bản chụp dựng từ JSON
+
+
+def restore_limit(session) -> str:
+    """Câu giới hạn của việc khôi phục theo phiên: phiên đã nạp shape của job (`Session.adopted`) khôi phục được trọn nhãn mắt."""
+    return RESTORE_LIMIT_ADOPTED if getattr(session, "adopted", False) else RESTORE_LIMIT
 
 
 def edit_command(fn):
@@ -692,7 +698,7 @@ class CvatMixin:
             lb.pack(side="left", fill="both", expand=True)
             sb.pack(side="right", fill="y")
         if res.snapshot is not None:                          # chưa gửi gì thì job chưa bị EyePin đụng tới: không có gì để khôi phục
-            ttk.Label(d, text=RESTORE_LIMIT, wraplength=640, justify="left", style="Muted.TLabel").pack(anchor="w", padx=12, pady=8)
+            ttk.Label(d, text=restore_limit(session), wraplength=640, justify="left", style="Muted.TLabel").pack(anchor="w", padx=12, pady=8)
         bar = ttk.Frame(d)
         bar.pack(fill="x", padx=12, pady=(8, 12))
         if res.snapshot is not None:
@@ -711,7 +717,7 @@ class CvatMixin:
         client = getattr(source, "client", None) or self.cvat_client
         if s is None or client is None or snapshot is None:
             return
-        if not self.ask_restore_job(f"Khôi phục sẽ thay toàn bộ nhãn của job #{job_id} trên CVAT bằng bản chụp trước khi gửi.\n\n{RESTORE_LIMIT}\n\nTiếp tục?"):
+        if not self.ask_restore_job(f"Khôi phục sẽ thay toàn bộ nhãn của job #{job_id} trên CVAT bằng bản chụp trước khi gửi.\n\n{restore_limit(s)}\n\nTiếp tục?"):
             return
         current = self.s is s and (s.cvat or {}).get("job") == job_id     # trong lúc việc nền chạy không mở được phiên khác (busy)
 

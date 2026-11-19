@@ -2,10 +2,13 @@
 
 Ghi vào CVAT chỉ bằng import ("CVAT 1.1"), mà import thay TOÀN BỘ nhãn của job, nên quy trình là:
   prepare  đọc lại job (đã bị sửa chưa), nhãn hiện có bằng JSON (đúng loại track/shape), chọn định dạng nền, xuất nền mới nhất bỏ nhãn mắt,
-           giữ bản XML nền gốc làm bản chụp để khôi phục; trả SendPlan để người dùng xác nhận.
+           giữ bản XML nền gốc làm bản chụp để khôi phục; trả SendPlan để người dùng xác nhận. Phiên đã nạp shape (`Session.adopted`, xem
+           adopt.py) thì còn đếm shape mắt giữ nguyên / sửa / thêm / bỏ so với JSON của job (`count_changes`) và dựng bản chụp từ JSON
+           (`adopted_snapshot`) vì bản xuất nền có thể trải hoặc đổi kiểu shape mắt.
   send     ghép nhãn mắt của phiên vào nền, import, rồi xuất lại "CVAT for video" và đối chiếu với điều tool tuyên bố (như tests/verify_vs_cvat.py:
            vị trí trong 2 px + làm tròn, cờ Occluded/Outside, keyframe). Shape mắt được đối chiếu bằng JSON annotations (chỉ JSON giữ đúng
-           loại); track một frame mà bản xuất video sinh ra từ mỗi shape bị bỏ trước khi đếm track.
+           loại); track một frame mà bản xuất video sinh ra từ mỗi shape bị bỏ trước khi đếm track. Shape "giữ nguyên" của phiên đã nạp
+           còn được kiểm riêng: CVAT phải lưu đúng như trước khi gửi (`TOL_KEPT_CHECK`).
   restore  import lại bản chụp.
 
 Frame: mọi so sánh theo chỉ số EyePin (XML đọc về đã đổi sang chỉ số, xem cvatxml.parse_bytes); file gửi đi mang số frame của job. Frame bỏ qua khi
@@ -17,18 +20,21 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from . import cvatxml, qc
 from .cvatapi import EYES as EYE_NAMES, CvatClient, CvatError, LoginNeeded
 from .cvatsource import VIDEO, _eye_label_ids, _is_eye, base_format
-from .cvatxml import Annotations, EyeKey, EyeShape
+from .cvatxml import Annotations, EyeKey, EyeShape, PointState
 from .geometry import EYES
 from .qc import EyeLabels
 from .session import KEYFRAME_TOL, Session
 
 TOL_KEY = 0.02                       # px: tại keyframe CVAT phải giữ đúng toạ độ (chỉ chênh làm tròn hai chữ số)
 TOL_INTERP = KEYFRAME_TOL + 0.02     # px: giữa hai keyframe, CVAT nội suy đường thẳng và tool cho phép lệch tới KEYFRAME_TOL
+TOL_KEPT = 0.005                     # px: một shape của job đã nạp được đếm "giữ nguyên" khi mọi điểm lệch không quá chừng này (mỗi trục)
+TOL_KEPT_CHECK = 0.01                # px: sau khi gửi, shape "giữ nguyên" phải còn đúng như trước khi gửi trong chừng này (làm tròn hai chữ số)
 MAX_MISMATCHES = 40                  # liệt kê tối đa chừng này chỗ lệch; còn lại chỉ đếm
 _CVAT_FAILED = "CVAT báo thất bại"   # đầu thông điệp của cvatapi khi CVAT trả status `failed` (khác với mất kết nối: kết quả chưa rõ)
 
@@ -44,20 +50,30 @@ class SendPlan:
     opened_updated: str | None = None    # updated_date lúc mở job (session.cvat["updated"])
     server_updated: str | None = None    # updated_date lúc prepare; send từ chối nếu CVAT đã đổi sau đó
     ann: Annotations | None = field(default=None, repr=False)    # nền đã bỏ nhãn mắt (chỉ số EyePin)
-    base_xml: bytes = field(default=b"", repr=False)             # bản xuất nền gốc, nguyên văn: bản chụp để khôi phục
+    base_xml: bytes = field(default=b"", repr=False)             # bản chụp để khôi phục: bản xuất nền gốc nguyên văn; phiên đã nạp: dựng từ JSON (`adopted_snapshot`)
     non_eye: dict = field(default_factory=dict, repr=False)      # số đối tượng không phải mắt theo nhãn trước khi gửi (_count_non_eye)
     label_names: dict = field(default_factory=dict, repr=False)  # id nhãn -> tên (để báo)
     shapes: int = 0                                              # số shape mắt EyePin sẽ gửi (mọi người)
     labels: list = field(default_factory=list, repr=False)       # nhãn của job (`client.labels`, có `sublabels`): đọc JSON shape sau khi gửi
+    adopted: bool = False                                        # phiên đã nạp shape mắt của job (`Session.adopted`): gửi là sửa các shape đó
+    counts: dict | None = None                                   # chỉ khi `adopted`: {"server", "kept", "edited", "added", "removed"} (`count_changes`)
+    kept: list = field(default_factory=list, repr=False)         # chỉ khi `adopted`: shape của job được đếm "giữ nguyên" (dạng `_json_eye_shapes`)
 
     def needs_warning(self) -> bool:
+        if self.adopted:                                         # gửi lại chỉ làm mất shape bị bỏ; sửa và thêm không phải điều đáng hỏi
+            return self.counts["removed"] > 0 or self.changed_on_server or self.mixed_types
         return self.changed_on_server or not self.replaced.empty() or self.mixed_types
 
     def text(self) -> str:
-        what = f"{self.keyframes} keyframe và {self.shapes} shape mắt mới" if self.shapes else f"{self.keyframes} keyframe mắt mới"
-        lines = [f"EyePin sẽ thay toàn bộ nhãn của job #{self.job_id} trên CVAT bằng nhãn nền hiện có cộng {what}."]
-        if not self.replaced.empty():
-            lines.append(f"Việc gửi sẽ xoá nhãn mắt đang có trên CVAT: {self.replaced.message()}.")
+        if self.adopted:
+            c = self.counts
+            lines = [f"Job có {c['server']} shape mắt trên CVAT. Sẽ gửi {self.shapes} shape: giữ nguyên {c['kept']}, sửa {c['edited']}, "
+                     f"thêm {c['added']}, bỏ {c['removed']}."]
+        else:
+            what = f"{self.keyframes} keyframe và {self.shapes} shape mắt mới" if self.shapes else f"{self.keyframes} keyframe mắt mới"
+            lines = [f"EyePin sẽ thay toàn bộ nhãn của job #{self.job_id} trên CVAT bằng nhãn nền hiện có cộng {what}."]
+            if not self.replaced.empty():
+                lines.append(f"Việc gửi sẽ xoá nhãn mắt đang có trên CVAT: {self.replaced.message()}.")
         if self.mixed_types:
             lines.append("Job có cả shape lẫn track không phải mắt: khi gửi, shape sẽ thành track một frame (nhãn nền được gửi theo CVAT for video).")
         if self.changed_on_server:
@@ -155,7 +171,8 @@ def _count_diff(before: dict, after: dict, names: dict) -> list[str]:
 def prepare(session: Session, client: CvatClient) -> SendPlan:
     """Hỏi CVAT mọi điều cần biết trước khi gửi (không ghi gì). Ném CvatError/LoginNeeded nếu không hỏi được, nếu nhãn tool tính đang cũ
     (`session.stale`), hoặc khi gửi chắc chắn làm mất nhãn không phải mắt: nhãn trên frame CVAT đã xoá (bản xuất bỏ chúng), tag khi nền là
-    "CVAT for video" (định dạng này không ghi tag), nhãn nằm ngoài phạm vi frame của job."""
+    "CVAT for video" (định dạng này không ghi tag), nhãn nằm ngoài phạm vi frame của job. Phiên đã nạp shape (`session.adopted`): thêm `counts`
+    và `kept` (`count_changes`), bản chụp dựng từ JSON; ném CvatError khi một shape mắt của job không dựng lại được (không đủ 8 điểm, ngoài job)."""
     job_id = _require_cvat(session)
     if getattr(session, "stale", False):
         raise CvatError(STALE_MSG)
@@ -190,11 +207,20 @@ def prepare(session: Session, client: CvatClient) -> SendPlan:
         keyframes = sum(len(t.keys) for t in session.build_all_tracks())
     except ValueError:
         keyframes = 0                                         # chưa ghim gì: send sẽ từ chối
+    sent = session.build_shapes()
+    counts, kept, snapshot = None, [], base_xml
+    if session.adopted:                                       # shape mắt của job được sửa tại chỗ: đếm so với JSON lúc này, bản chụp giữ shape là shape
+        nums = session.source.frame_numbers
+        counts, kept = count_changes(sent, _json_eye_shapes(aj, labels), nums)
+        try:
+            snapshot = adopted_snapshot(ann, aj, labels, nums, session.names, (session.width, session.height))
+        except ValueError as e:
+            raise CvatError(f"{e} Không gửi.") from e
     updated = job.get("updated_date")
     return SendPlan(changed_on_server=updated != session.cvat.get("updated"), replaced=_eye_labels_from_json(aj, labels), mixed_types=mixed,
                     keyframes=keyframes, base_format=base, job_id=job_id, opened_updated=session.cvat.get("updated"), server_updated=updated,
-                    ann=ann, base_xml=base_xml, non_eye=_count_non_eye(aj, eye_ids), label_names=names,
-                    shapes=len(session.build_shapes()), labels=labels)
+                    ann=ann, base_xml=snapshot, non_eye=_count_non_eye(aj, eye_ids), label_names=names,
+                    shapes=len(sent), labels=labels, adopted=session.adopted, counts=counts, kept=kept)
 
 
 @dataclass
@@ -279,6 +305,98 @@ def _json_eye_shapes(aj: dict, labels: list[dict]) -> list[tuple[str, int, dict[
             pts[who[1]] = ((float(xy[0]), float(xy[1])), bool(el.get("occluded")), bool(el.get("outside")))
         out.append((name, int(o.get("frame", -1)), pts))
     return out
+
+
+# ---- phiên đã nạp shape (adopt.py): đếm thay đổi, kiểm shape "giữ nguyên", bản chụp ----
+# Dạng một shape của CVAT trong các hàm dưới: như một phần tử của `_json_eye_shapes`, (tên mắt, số frame của job, {điểm: ((x, y), occluded, outside)}).
+
+def _flag(occluded: bool, outside: bool) -> str | None:
+    return "outside" if outside else ("occluded" if occluded else None)
+
+
+def _same_points(a: dict, b: dict, tol: float) -> bool:
+    """Hai bộ điểm (dạng của `_json_eye_shapes`) giống nhau: cùng các điểm, mỗi điểm lệch không quá `tol` theo từng trục, cùng cờ. So với
+    `tol + 1e-9` vì làm tròn hai chữ số có thể cho hiệu 0,005000000000109."""
+    if set(a) != set(b):
+        return False
+    for pid, ((x, y), occ, out) in a.items():
+        (x2, y2), occ2, out2 = b[pid]
+        if _flag(occ, out) != _flag(occ2, out2) or abs(x - x2) > tol + 1e-9 or abs(y - y2) > tol + 1e-9:
+            return False
+    return True
+
+
+def _mean_dist(a: dict, b: dict) -> float:
+    d = [math.dist(a[p][0], b[p][0]) for p in a if p in b]
+    return sum(d) / len(d) if d else math.inf
+
+
+def count_changes(sent: list[EyeShape], server: list[tuple[str, int, dict]], frame_numbers: list[int]) -> tuple[dict, list[tuple]]:
+    """So shape mắt tool sắp gửi (`sent`, frame là chỉ số EyePin) với shape mắt đang có trên CVAT (`server`, kết quả `_json_eye_shapes`, frame là số
+    frame của job). Khoá là (tên mắt, frame): "giữ" khi có ở cả hai và mọi điểm lệch không quá `TOL_KEPT` theo từng trục, cờ trùng; "sửa" khi có ở
+    cả hai mà không giữ; "thêm" chỉ có trong `sent`; "bỏ" chỉ có trên server. Đổi bên mắt ở một frame (label) là hai "sửa". Hai shape cùng khoá
+    (hai người) được ghép theo khoảng cách điểm nhỏ nhất trước, nên kết quả không phụ thuộc thứ tự `sent`.
+    Trả ({"server", "kept", "edited", "added", "removed"}, các mục `server` được đếm "giữ")."""
+    mine: dict[tuple[str, int], list[dict]] = {}
+    for sh in sent:
+        mine.setdefault((sh.label, frame_numbers[sh.key.frame]), []).append({p: (ps.xy, ps.occluded, ps.outside) for p, ps in sh.key.points.items()})
+    theirs: dict[tuple[str, int], list[tuple]] = {}
+    for item in server:
+        theirs.setdefault(item[:2], []).append(item)
+    counts = {"server": len(server), "kept": 0, "edited": 0, "added": 0, "removed": 0}
+    kept: list[tuple] = []
+    for key in sorted(set(mine) | set(theirs)):
+        ws, gs = mine.get(key, []), theirs.get(key, [])
+        used_w: set[int] = set()
+        used_g: set[int] = set()
+        for _, i, j in sorted((_mean_dist(w, g[2]), i, j) for i, w in enumerate(ws) for j, g in enumerate(gs)):
+            if i in used_w or j in used_g:
+                continue
+            used_w.add(i)
+            used_g.add(j)
+            if _same_points(ws[i], gs[j][2], TOL_KEPT):
+                counts["kept"] += 1
+                kept.append(gs[j])
+            else:
+                counts["edited"] += 1
+        counts["added"] += len(ws) - len(used_w)
+        counts["removed"] += len(gs) - len(used_g)
+    return counts, kept
+
+
+def _kept_changed(aj: dict, labels: list[dict], kept: list[tuple]) -> list[str]:
+    """Shape "giữ nguyên" (`SendPlan.kept`, đã có trên CVAT trước khi gửi và không ai sửa) mà JSON sau import không còn y như trước: thiếu, hoặc có
+    điểm lệch quá `TOL_KEPT_CHECK` hay cờ khác."""
+    got: dict[tuple[str, int], list[dict]] = {}
+    for name, jf, pts in _json_eye_shapes(aj, labels):
+        got.setdefault((name, jf), []).append(pts)
+    return [f"Shape {name} frame {jf} không ai sửa nhưng CVAT lưu khác bản trước khi gửi"
+            for name, jf, pts in kept if not any(_same_points(pts, g, TOL_KEPT_CHECK) for g in got.get((name, jf), []))]
+
+
+def adopted_snapshot(ann_no_eyes: Annotations, aj: dict, labels: list[dict], frame_numbers: list[int], names: Sequence[str],
+                     size: tuple[int, int]) -> bytes:
+    """Bản chụp để khôi phục job của phiên đã nạp: nhãn nền `ann_no_eyes` (bản xuất nền đã bỏ nhãn mắt, đọc bằng `parse_bytes(..., frame_numbers)`
+    nên frame theo chỉ số EyePin và `write_eyes` đổi lại sang số frame của job) cộng shape mắt
+    đọc từ JSON `aj` (toạ độ và cờ như CVAT đang lưu), ghi thành `<image>` theo số frame của job. Dựng từ JSON vì bản xuất nền có thể đổi shape mắt
+    thành track hoặc trải ra mọi frame (xem design/cvat-api-notes.md), khôi phục từ đó sẽ đổi kiểu đối tượng. `names[i]`, `size`: tên ảnh và cỡ ảnh để
+    `write_eyes` tạo `<image>` cho frame file nền chưa có. ValueError (tiếng Việt) khi một shape mắt không đủ 8 điểm hoặc nằm ngoài job: khôi phục
+    không trả lại đúng được nên không dựng."""
+    index = {n: i for i, n in enumerate(frame_numbers)}
+    shapes = []
+    for name, jf, pts in _json_eye_shapes(aj, labels):
+        if jf not in index:
+            raise ValueError(f"Shape mắt {name} ở frame {jf} nằm ngoài job nên không dựng được bản chụp để khôi phục.")
+        if set(pts) != set(EYES[name].ids):
+            raise ValueError(f"Shape mắt {name} ở frame {jf} của job không đủ 8 điểm nên không dựng được bản chụp để khôi phục.")
+        key = EyeKey(index[jf], {pid: PointState(xy, outside, occluded) for pid, (xy, occluded, outside) in pts.items()})
+        shapes.append(EyeShape(name, key))
+    shapes.sort(key=lambda sh: (sh.key.frame, sh.label))
+    with tempfile.TemporaryDirectory(prefix="eyepin_snap_") as d:
+        path = os.path.join(d, "snapshot.xml")
+        cvatxml.write_eyes(ann_no_eyes, path, new_shapes=shapes, frame_names=names, size=size)
+        with open(path, "rb") as fh:
+            return fh.read()
 
 
 def _compare_shapes(aj: dict, labels: list[dict], want: dict[str, list[EyeShape]], skip: set[int], nums: list[int],
@@ -499,11 +617,12 @@ def send(session: Session, client: CvatClient, plan: SendPlan) -> SendResult:
     lost = _count_diff(plan.non_eye, after, plan.label_names)                  # lưới an toàn: nhãn không phải mắt phải còn đủ
     skip, nums = set(session.source.deleted), session.source.frame_numbers
     n_shapes = sum(map(len, want_shapes.values()))
+    kept_changed = _kept_changed(aj, plan.labels, plan.kept)  # chỉ có khi phiên đã nạp: shape không ai sửa phải còn y như trước khi gửi
     if n_shapes:                                              # track một frame do bản xuất video sinh ra từ shape bị bỏ; shape so bằng JSON
         mismatches = lost + _cap(_compare(video, want, skip, nums, want_shapes, cap=False)
-                                 + _compare_shapes(aj, plan.labels, want_shapes, skip, nums, cap=False))
+                                 + _compare_shapes(aj, plan.labels, want_shapes, skip, nums, cap=False) + kept_changed)
     else:
-        mismatches = lost + _compare(video, want, skip, nums)
+        mismatches = lost + _compare(video, want, skip, nums) + kept_changed
     if lost:                                                  # bản chụp là cùng bản xuất nền nên có thể cũng thiếu các nhãn này: không hứa khôi phục
         return fail(f"Đã gửi, nhưng CVAT lưu khác tool ở {len(mismatches)} chỗ, trong đó có nhãn không phải mắt bị mất hoặc đổi số lượng. "
                     "Bản chụp trước khi gửi có thể không chứa các nhãn đó nên khôi phục có thể không lấy lại được: hãy kiểm trên CVAT ngay.",
@@ -521,5 +640,6 @@ def restore(client: CvatClient, job_id: int, snapshot: bytes) -> None:
 
     Giới hạn: bản chụp là bản xuất nền theo định dạng nền của lúc gửi, nên nhãn mắt cũ chỉ được khôi phục đúng loại khi định dạng nền cũng là
     định dạng hiện nhãn mắt cũ (ví dụ nền "CVAT for images" trả track mắt cũ về thành shape ở mọi frame). Người dùng đã xác nhận xoá nhãn
-    mắt cũ khi gửi; khôi phục chủ yếu để lấy lại nhãn nền. Sau khi khôi phục nên gọi `mark_synced` để mốc cập nhật của phiên theo job."""
+    mắt cũ khi gửi; khôi phục chủ yếu để lấy lại nhãn nền. Phiên đã nạp shape không có giới hạn đó: bản chụp dựng từ JSON (`adopted_snapshot`)
+    nên shape mắt về đúng là shape. Sau khi khôi phục nên gọi `mark_synced` để mốc cập nhật của phiên theo job."""
     client.import_xml(job_id, snapshot)
