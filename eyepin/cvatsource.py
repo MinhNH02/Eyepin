@@ -125,7 +125,8 @@ def _shapes_from_video(ann: cvatxml.Annotations, annotations_json: dict, labels:
 
 
 def open_job(client: CvatClient, job_id: int) -> Session:
-    """Mở một job của CVAT thành phiên làm việc: nhãn hiện có là nhãn nền (job có nhãn mắt thì phiên ở chế độ QC)."""
+    """Mở một job của CVAT thành phiên làm việc: nhãn hiện có là nhãn nền. Job có nhãn mắt: nạp được (`adopt.check` rỗng: mọi mắt là shape đọc
+    đủ, gửi lại không mất gì) thì nạp thành shape sửa được (`Session.adopted`), không thì phiên ở chế độ QC kèm `Session.qc_reasons`."""
     problem = client.eye_labels_ok(job_id)
     if problem:
         raise CvatError(problem + " EyePin chỉ mở job có hai skeleton mắt 'mattrai' và 'matphai' (8 điểm mỗi mắt).")
@@ -148,5 +149,13 @@ def open_job(client: CvatClient, job_id: int) -> Session:
     session = Session(source=source, ann=ann)
     session.cvat = {"job": job_id, "updated": source.job.get("updated_date")}
     session.base_format, session.display_format = base, display
-    session.qc = qc.has_eye_labels(ann) or json_eyes     # JSON thấy mắt mà XML không (track rỗng/toàn Outside): vẫn là QC, không cho gán đè
+    if json_eyes:
+        from . import adopt                              # adopt nhập module này: nhập muộn để khỏi vòng
+        reasons = adopt.check(aj, labels, nums, {nums[i] for i in source.deleted})
+        if reasons:
+            session.qc, session.qc_reasons = True, reasons     # có nhãn mắt mà không nạp được: chỉ xem (track rỗng/toàn Outside mà XML không thấy cũng vào đây)
+        else:
+            session.adopt(adopt.eye_shapes(aj, labels, nums))
+    else:
+        session.qc = qc.has_eye_labels(ann)
     return session

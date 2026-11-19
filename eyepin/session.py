@@ -110,6 +110,7 @@ class Session:
         self.cur = 0
         self.qc = False                                      # True: job đã có nhãn mắt, chỉ xem (chỉ nơi gọi chọn CVAT mới bật)
         self.adopted = False                                 # True: job đã nạp shape mắt có sẵn (`adopt`): mọi mắt của phiên là shape, không vẽ được track
+        self.qc_reasons: list[str] = []                      # lý do job có nhãn mắt mà không nạp được (`adopt.check`, do `open_job` đặt khi vào QC)
         self.cvat: dict | None = None                        # {"job", "updated"} khi mở từ một job CVAT (cvatsource.open_job đặt sau khi tạo)
         self.base_format: str | None = None                  # định dạng nền khi gửi lên CVAT / định dạng hiện nhãn mắt (cũng do open_job đặt)
         self.display_format: str | None = None

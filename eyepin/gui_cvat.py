@@ -241,6 +241,10 @@ class CvatMixin:
     def ask_restore_job(self, text: str) -> bool:
         return messagebox.askyesno("Khôi phục job", text, icon="warning", default="no", parent=self.root)
 
+    def ask_restore_adopted(self, text: str) -> bool:
+        """Hỏi có khôi phục phiên đã lưu thay cho shape vừa nạp từ CVAT không (phiên đã nạp, file phiên còn công chưa gửi)."""
+        return messagebox.askyesno("Khôi phục phiên", f"{text}\n\nKhôi phục không?", icon="warning", parent=self.root)
+
     def new_client(self, url: str) -> CvatClient:
         return CvatClient(url)
 
@@ -538,16 +542,28 @@ class CvatMixin:
         self.side.select(self.issues_tab)
 
     def _open_extras(self):
-        """Gọi khi một phiên vừa được mở xong: job đã có nhãn mắt thì vào chế độ QC (tự quét, mở tab Issues)."""
-        if self.s is not None and self.s.qc:
+        """Gọi khi một phiên vừa được mở xong. Job đã có nhãn mắt mà không nạp được thì vào chế độ QC (tự quét, mở tab Issues, nêu lý do không nạp
+        được); phiên đã nạp shape mắt thì báo số shape đã nạp, trừ khi vừa khôi phục từ file phiên (`try_restore` đã báo). Thông báo nối sau
+        thông báo đang có (`try_restore` chạy trước)."""
+        s = self.s
+        intro = ""
+        if s is not None and s.qc:
             self._enter_qc_view()
-            if qc.eye_labels(self.s.ann).empty():            # QC chỉ do JSON: bản xuất không còn thấy mắt nào để xem hay quét
+            if qc.eye_labels(s.ann).empty():                 # QC chỉ do JSON: bản xuất không còn thấy mắt nào để xem hay quét
                 intro = ("Chế độ QC: job có nhãn mắt rỗng hoặc toàn Outside trên CVAT, bản xuất không hiện nhãn nào để xem. "
                          "Muốn gán lại thì bấm \"Xoá nhãn mắt cũ và gán lại\" (lúc gửi, nhãn mắt cũ trên CVAT bị thay). Gửi lên CVAT đang tắt.")
             else:
-                n = len(self.s.findings)
+                n = len(s.findings)
                 intro = (f"Chế độ QC: job đã có nhãn mắt, quét thấy {n} vấn đề. Chỉ xem; muốn gán lại thì bấm \"Xoá nhãn mắt cũ và gán lại\". "
                          "Gửi lên CVAT đang tắt.")
+            if s.qc_reasons:
+                intro += " Lý do: " + " ".join(s.qc_reasons)
+        elif s is not None and s.adopted and not self._just_restored:
+            shapes = s.build_shapes()
+            per_eye = ", ".join(f"{label} {sum(1 for sh in shapes if sh.label == label)}" for label in EYES)
+            missing = 0                                      # số đoạn thiếu nhãn (`gaps.find_gaps`, Task 4 nối vào)
+            intro = f"Đã nạp {len(shapes)} shape mắt của job để sửa ({per_eye}); thiếu nhãn ở {missing} đoạn."
+        if intro:
             self.notice = f"{self.notice} {intro}" if self.notice else intro
 
     def qc_clear(self):
