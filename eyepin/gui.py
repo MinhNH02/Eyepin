@@ -203,7 +203,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         self._left_pan = False
         self.scratch = False                 # True khi mở bằng --pins: không khôi phục, không ghi file phiên (bản demo không đụng phiên đã lưu)
         self._scratch_pins: dict | None = None   # dữ liệu --pins đã nạp (để mở lại file nhãn cùng thư mục mà không mất ghim)
-        self._turns_sig: tuple = ()          # chữ ký các đoạn quay đầu đang hiện ở tab Issues
+        self._issues_sig: tuple = ()         # chữ ký những gì đang hiện ở tab Issues (xem `_issues_signature`): bảng chỉ dựng lại khi nó đổi
         self._turns_seen: set = set()        # đoạn quay đầu đã báo (người, frame đầu, frame cuối): chỉ báo lại khi có đoạn mới
         self._turn_target = None             # (người, frame) của đoạn quay đầu mới nhất, cho nút "Tới đoạn quay đầu"
         self._panel_key = None               # (phiên, frame, người, lựa chọn) lần cuối đồng bộ thẻ và nút ★ thanh trái (xem `_sync_panel`)
@@ -241,6 +241,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         menu.add_separator()
         menu.add_command(label=f"Chạy hành động ({self.kl('run_actions')})…", command=self.show_run_actions)
         menu.add_command(label=f"Quét nhãn có sẵn ({self.kl('scan')})", command=self.scan)
+        menu.add_command(label="Chép shape gần nhất vào frame này", command=self.copy_nearest_shape)
+        menu.add_command(label="Điền đoạn thiếu nhãn", command=self.fill_gap_here)
         menu.add_command(label="Xoá toàn bộ nhãn (Remove annotations)…", command=self.remove_annotations)
         menu.add_command(label=f"Xuất file import ({self.kl('export')})", command=self.export)
         menu.add_command(label="Hoàn tất job (Finish the job)…", command=self.finish_job)
@@ -405,7 +407,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
                                      bg=theme.WHITE, fg=theme.INK, relief="solid", bd=1, padx=6, pady=4)
         self.issue_detail.pack(fill="x", pady=(4, 0))
         self.issue_info = []
-        self.items: list[int] = []
+        self.issue_rows: list[tuple[str, object]] = []    # (loại, dữ liệu) của từng dòng bảng Issues: "turn", "finding", "gap", "auto", "cvat"
+        self.items: list[int | None] = []                 # frame của từng dòng (None: dòng không có frame để nhảy tới)
         self.status = tk.StringVar(value="Mở một thư mục ảnh để bắt đầu. Cuộn chuột để phóng to; kéo chuột để dời ảnh.")
         self.measure_var = tk.StringVar(value="")                  # toạ độ ảnh dưới con trỏ và khoảng cách tới điểm gần nhất
         status_row = ttk.Frame(self.root)
@@ -622,6 +625,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
             "marker_up": lambda: self.resize_markers(1.25), "marker_down": lambda: self.resize_markers(0.8), "swap_top": self.swap_top,
             "image_setups": self.show_image_setups, "grid": self.toggle_grid,
             "open_cvat": self.open_cvat, "send_cvat": self.send_cvat, "qc_clear": self.qc_clear, "issue_report": self.show_issue_report,
+            "copy_nearest_shape": self.copy_nearest_shape, "fill_gap": self.fill_gap_here,
         }
 
     def _bind_keys(self):
@@ -1399,9 +1403,9 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         self._cancel_drag()                              # lần kéo đang dở thuộc phiên cũ
         self.f, self.anchor, self.clicks, self.pinning, self.manual = 0, None, [], None, None
         self.draft, self.draft_drag, self._box0 = None, None, None
-        self.items = []
+        self.items, self.issue_rows = [], []
         self.hidden_objs.clear()                         # chỉ số người của phiên cũ không còn đúng
-        self._turns_sig = ()
+        self._issues_sig = ()
         self._turns_seen, self._turn_target = set(), None
         self.turn_bar.place_forget()
         self._auto_key = None
@@ -2393,7 +2397,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
 
     def on_list(self, _):
         i = self._issue_selected()
-        if i is not None and i < len(self.items):
+        if i is not None and i < len(self.items) and self.items[i] is not None:
             self.go(self.items[i])
 
     def on_timeline(self, e):
@@ -2746,8 +2750,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         if pts:
             xs, ys = [p[0] for p in pts.values()], [p[1] for p in pts.values()]
             self.anchor = (min(xs), min(ys), max(xs), max(ys))
-        if not light and self._turns_signature() != self._turns_sig:
-            self._fill_issues()                       # đoạn quay đầu đổi sau khi ghim/sửa: cập nhật tab Issues (không dựng lại khi không đổi)
+        if not light and self._issues_signature() != self._issues_sig:
+            self._fill_issues()                       # quay đầu, thiếu nhãn, shape chưa xem hay issue CVAT đổi: cập nhật tab Issues (không đổi thì không dựng lại, giữ dòng đang chọn)
             self._announce_turns()
         override = ({self.drag[0]: self.drag[1]} if self.drag else self._eye_shift() if self.drag_eye
                     else self._resize_override() if self.drag_resize else self._rot_override())
