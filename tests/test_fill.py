@@ -327,6 +327,39 @@ class TestOccludedRange(FillCase):
         with self.assertRaises(ValueError):
             s.set_occluded_range("mattrai", [22], 0, 3, True)                        # điểm 22 thuộc mắt kia
 
+    def test_occluded_range_keeps_filled_shapes_unreviewed(self):
+        s = self.session(mattrai=without(ALL, 3, 4, 5, 6))
+        s.fill_gap("mattrai", 3, 6)
+        self.assertEqual(s.unreviewed("mattrai"), [3, 4, 5, 6])
+        depth = len(s._undo)
+        self.assertEqual(s.set_occluded_range("mattrai", [14], 0, 9, True), (10, 0))
+        self.assertEqual(len(s._undo), depth + 1)                                    # vẫn một bước hoàn tác
+        self.assertEqual(s.flags_at(4), {14: "occluded"})
+        self.assertEqual(s.unreviewed("mattrai"), [3, 4, 5, 6])                      # đổi cờ hàng loạt không làm shape điền thành "đã xem"
+        self.assertTrue(s.undo())                                                    # hoàn tác trả cả cờ lẫn danh sách
+        self.assertEqual(s.flags_at(4), {})
+        self.assertEqual(s.unreviewed("mattrai"), [3, 4, 5, 6])
+        self.assertTrue(s.redo())
+        self.assertEqual(s.flags_at(4), {14: "occluded"})
+        self.assertEqual(s.unreviewed("mattrai"), [3, 4, 5, 6])
+
+    def test_occluded_range_does_not_revive_reviewed_fills(self):
+        s = self.session(mattrai=without(ALL, 3, 4, 5, 6))
+        s.fill_gap("mattrai", 3, 6)
+        x, y = s.pins[4][14]
+        s.move_point(4, 14, (x + 1.0, y))                                            # shape 4 đã được sửa tay: "đã xem"
+        s.mark_reviewed("mattrai", [6])                                              # shape 6 đã đánh dấu xem
+        s.set_occluded_range("mattrai", [14], 0, 9, True)
+        self.assertEqual(s.unreviewed("mattrai"), [3, 5])                            # chỉ shape còn "chưa xem" trước đó giữ nguyên danh sách
+        self.assertTrue(s.undo())
+        self.assertEqual(s.unreviewed("mattrai"), [3, 5])                            # hoàn tác không đưa shape đã xem trở lại danh sách
+
+    def test_single_flag_toggle_still_marks_reviewed(self):
+        s = self.session(mattrai=without(ALL, 3, 4, 5, 6))
+        s.fill_gap("mattrai", 3, 6)
+        s.toggle_flag(4, 14, "occluded")                                             # sửa tay một cờ: shape đó ra khỏi danh sách
+        self.assertEqual(s.unreviewed("mattrai"), [3, 5, 6])
+
     def test_occluded_range_does_not_touch_the_other_eye(self):
         s = self.session()
         s.set_occluded_range("mattrai", None, 0, 5, True)

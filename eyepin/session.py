@@ -806,6 +806,7 @@ class Session:
                 todo.append((f, change))
         if not todo:
             return 0, skipped
+        fresh = set(self.unreviewed(label))                  # shape điền tự động còn "chưa xem" trước lệnh này: đổi cờ hàng loạt không làm chúng thành "đã xem"
         self._push_undo()
         for f, change in todo:
             cur = self.flags.setdefault(f, {})
@@ -816,6 +817,8 @@ class Session:
                     del cur[i]
             if not cur:
                 del self.flags[f]
+            if f in fresh:
+                self.auto[label][f] = self._fingerprint(label, f)      # dấu vân mới (cờ mới): shape vẫn khớp dấu nên vẫn "chưa xem"
         self.touched[label] = time.time()
         return len(todo), skipped
 
@@ -954,7 +957,8 @@ class Session:
     def _snapshot(self) -> dict:
         return {"layers": [{"pins": copy.deepcopy(L.pins), "flags": copy.deepcopy(L.flags), "estimates": copy.deepcopy(L.estimates),
                             "ids": dict(L.obj_ids), "uid": dict(L.eye_uid), "kind": dict(L.kind),
-                            "shape_ids": {l: dict(d) for l, d in L.shape_ids.items()}} for L in self.layers],
+                            "shape_ids": {l: dict(d) for l, d in L.shape_ids.items()},
+                            "auto": {l: dict(d) for l, d in L.auto.items()}} for L in self.layers],
                 "cur": self.cur, "next_id": self.next_id}
 
     def _restore(self, snap: dict) -> None:
@@ -966,6 +970,9 @@ class Session:
             L.eye_uid = dict(d.get("uid", L.eye_uid))                   # mã mắt theo bản chụp: trạng thái giao diện về đúng mắt (B08, B09)
             L.kind = dict(d.get("kind") or {l: "track" for l in EYES})  # kiểu và ID shape theo bản chụp: xoá shape rồi hoàn tác trả đúng ID cũ
             L.shape_ids = {l: dict(v) for l, v in (d.get("shape_ids") or {l: {} for l in EYES}).items()}
+            for l, marks in (d.get("auto") or {}).items():       # dấu vân shape điền tự động trả về theo bản chụp (hoàn tác Occluded cả đoạn trả đúng dấu);
+                for f in marks.keys() & L.auto[l].keys():        # shape đã xem (không còn trong `auto`) vẫn là đã xem, hoàn tác không đưa lại vào danh sách
+                    L.auto[l][f] = marks[f]
         self.cur, self.next_id = min(snap["cur"], len(self.layers) - 1), snap["next_id"]
         self.recompute()
 
