@@ -162,6 +162,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         self._bound_ids: list[tuple[str, str]] = []   # (sequence, tên lệnh Tcl) của mọi phím đã gắn: gỡ phải xoá cả lệnh, không thì lệnh giữ App sống
         self.clipboard: dict | None = None
         self._dialogs: dict[str, tk.Toplevel] = {}
+        self._occl_ui: dict = {}                      # biến của hộp "Occluded cho cả đoạn" (`show_occluded_range`); rỗng khi chưa mở hộp
         root.title("EyePin — gán nhãn mắt cho CVAT")
         self._set_window_icon(root)
         self.s: Session | None = None
@@ -243,6 +244,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         menu.add_command(label=f"Quét nhãn có sẵn ({self.kl('scan')})", command=self.scan)
         menu.add_command(label="Chép shape gần nhất vào frame này", command=self.copy_nearest_shape)
         menu.add_command(label="Điền đoạn thiếu nhãn", command=self.fill_gap_here)
+        menu.add_command(label="Occluded cho cả đoạn…", command=self.show_occluded_range)
         menu.add_command(label="Xoá toàn bộ nhãn (Remove annotations)…", command=self.remove_annotations)
         menu.add_command(label=f"Xuất file import ({self.kl('export')})", command=self.export)
         menu.add_command(label="Hoàn tất job (Finish the job)…", command=self.finish_job)
@@ -625,7 +627,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
             "marker_up": lambda: self.resize_markers(1.25), "marker_down": lambda: self.resize_markers(0.8), "swap_top": self.swap_top,
             "image_setups": self.show_image_setups, "grid": self.toggle_grid,
             "open_cvat": self.open_cvat, "send_cvat": self.send_cvat, "qc_clear": self.qc_clear, "issue_report": self.show_issue_report,
-            "copy_nearest_shape": self.copy_nearest_shape, "fill_gap": self.fill_gap_here,
+            "copy_nearest_shape": self.copy_nearest_shape, "fill_gap": self.fill_gap_here, "occluded_range": self.show_occluded_range,
         }
 
     def _bind_keys(self):

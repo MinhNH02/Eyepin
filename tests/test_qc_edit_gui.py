@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 from eyepin import shortcuts as sc  # noqa: E402
 from eyepin.cvatapi import CvatError  # noqa: E402
 from eyepin.geometry import EYES  # noqa: E402
-from eyepin.session import SHAPE_ONLY_MSG  # noqa: E402
+from eyepin.session import QC_MSG, RANGE_MSG, SHAPE_ONLY_MSG  # noqa: E402
 import test_adopt as A  # noqa: E402
 import test_adopt_open as AO  # noqa: E402
 import test_gui_cvat as G  # noqa: E402
@@ -359,6 +359,194 @@ class TestCommands(QcEditCase):
         labels = [menu.entrycget(i, "label") for i in range(menu.index("end") + 1) if menu.type(i) == "command"]
         i = next(n for n, l in enumerate(labels) if l.startswith("Quét nhãn có sẵn"))
         self.assertEqual(labels[i + 1:i + 3], ["Chép shape gần nhất vào frame này", "Điền đoạn thiếu nhãn"])
+
+
+class TestOccludedRange(QcEditCase):
+    @staticmethod
+    def values(app):
+        """(người, mắt, điểm, từ frame, tới frame) trong hộp "Occluded cho cả đoạn" đang mở."""
+        ui = app._occl_ui
+        return tuple(ui[k].get() for k in ("layer", "label", "point", "first", "last"))
+
+    def test_defaults_from_current_run(self):
+        app = self.open_eyes()                                                   # mattrai có shape 0–4 và 7, matphai 0–7
+        app.go(3)
+        app.show_occluded_range()
+        self.assertIn("occluded_range", app._dialogs)
+        self.assertEqual(self.values(app), ("Người 1", "mattrai", "Cả mắt", "3", "4"))        # tới cuối đoạn 0–4 chứa frame 3
+        self.assertEqual(app._occl_ui["status"].get(), "")
+        app.select_eye("matphai", quiet=True)
+        app.go(2)
+        app.show_occluded_range()                                                 # mở lại: dựng lại theo frame và mắt hiện tại
+        self.assertEqual(self.values(app), ("Người 1", "matphai", "Cả mắt", "2", "7"))
+
+    def test_defaults_when_frame_has_no_shape(self):
+        app = self.open_eyes()
+        app.go(5)                                                                 # mattrai không có shape ở frame 5
+        app.show_occluded_range()
+        self.assertEqual(self.values(app), ("Người 1", "mattrai", "Cả mắt", "5", "5"))
+
+    def test_changing_eye_resets_point_and_range(self):
+        app = self.open_eyes()
+        app.go(3)
+        app.show_occluded_range()
+        ui = app._occl_ui
+        ui["point"].set("14")
+        ui["label"].set("matphai")
+        app._occluded_range_changed()                                             # như chọn trong ô Mắt
+        self.assertEqual(self.values(app), ("Người 1", "matphai", "Cả mắt", "3", "7"))
+        box = next(w for w in app._dialogs["occluded_range"].winfo_children() if str(w.cget("textvariable")) == str(ui["point"]))
+        box.tk.call(box.cget("postcommand"))                                      # như mở danh sách điểm: chỉ điểm của mắt đang chọn
+        self.assertEqual(tuple(str(v) for v in box.cget("values")), ("Cả mắt",) + tuple(str(i) for i in EYES["matphai"].ids))
+
+    def test_apply_sets_and_reports(self):
+        app = self.open_eyes()
+        app.go(1)
+        app.show_occluded_range()
+        ui = app._occl_ui
+        ui["point"].set("14")
+        depth = len(app.s._undo)
+        app.occluded_range_apply(True)
+        want = "Đã đặt Occluded cho điểm 14 ở 4 shape (frame 1–4)."
+        self.assertEqual(app.notice, want)
+        self.assertEqual(ui["status"].get(), want)
+        s = app.s
+        self.assertEqual([s.flags_at(f).get(14) for f in range(N)], [None, "occluded", "occluded", "occluded", "occluded", None, None, None])
+        self.assertEqual(s.flags_at(2).get(16), None)                              # chỉ điểm 14
+        self.assertEqual(len(s._undo), depth + 1)                                  # một bước hoàn tác cho cả đoạn
+        app.undo()
+        self.assertTrue(all(s.flags_at(f).get(14) is None for f in range(N)))
+
+    def test_apply_whole_eye_and_clear(self):
+        app = self.open_eyes()
+        app.go(0)
+        app.show_occluded_range()
+        app.occluded_range_apply(True)
+        self.assertEqual(app.notice, "Đã đặt Occluded cho cả mắt ở 5 shape (frame 0–4).")
+        self.assertTrue(all(app.s.flags_at(3).get(i) == "occluded" for i in EYES["mattrai"].ids))
+        self.assertIsNone(app.s.flags_at(3).get(22))                               # mắt kia không đổi
+        app._occl_ui["first"].set("2")
+        app.occluded_range_apply(False)
+        self.assertEqual(app.notice, "Đã bỏ Occluded cho cả mắt ở 3 shape (frame 2–4).")
+        self.assertEqual([app.s.flags_at(f).get(14) for f in range(5)], ["occluded", "occluded", None, None, None])
+
+    def test_clear_and_outside_skip(self):
+        app = self.open_eyes()
+        s = app.s
+        s.toggle_flag(2, 14, "outside")                                            # điểm 14 ở frame 2 đang Outside
+        app.go(0)
+        app.show_occluded_range()
+        app._occl_ui["point"].set("14")
+        app.occluded_range_apply(True)
+        self.assertEqual(app.notice, "Đã đặt Occluded cho điểm 14 ở 4 shape (frame 0–4); bỏ qua 1 điểm đang Outside.")
+        self.assertEqual(s.flags_at(2), {14: "outside"})
+        app.occluded_range_apply(False)
+        self.assertEqual(app.notice, "Đã bỏ Occluded cho điểm 14 ở 4 shape (frame 0–4); bỏ qua 1 điểm đang Outside.")
+        self.assertEqual(s.flags_at(2), {14: "outside"})
+
+    def test_bad_input(self):
+        app = self.open_eyes()
+        app.go(0)
+        app.show_occluded_range()
+        ui = app._occl_ui
+        depth, notice = len(app.s._undo), app.notice
+        ui["first"].set("x")
+        app.occluded_range_apply(True)
+        self.assertEqual(ui["status"].get(), "Từ frame và Tới frame phải là số nguyên.")
+        self.assertEqual(len(app.s._undo), depth)
+        self.assertEqual(app.s.flags_at(0), {})
+        ui["first"].set("4")
+        ui["last"].set("1")                                                        # từ > tới: Session từ chối
+        app.occluded_range_apply(True)
+        self.assertEqual(ui["status"].get(), RANGE_MSG)
+        self.assertEqual(len(app.s._undo), depth)
+        ui["first"].set("0")
+        ui["last"].set("99")                                                       # ngoài phạm vi
+        app.occluded_range_apply(True)
+        self.assertEqual(ui["status"].get(), f"frame ngoài phạm vi 0–{N - 1}")
+        self.assertEqual(len(app.s._undo), depth)
+        self.assertEqual(app.s.flags_at(0), {})
+
+    def test_other_person_is_chosen_in_the_box(self):
+        app = self.open_eyes()
+        s = app.s
+        s.add_layer()
+        for f in (0, 1, 2):
+            s.pin_eye(f, "mattrai", {i: T.pins_at(f)[i] for i in EYES["mattrai"].pins})
+        s.select_layer(0)
+        app.refresh()
+        app.go(0)
+        app.show_occluded_range()
+        ui = app._occl_ui
+        self.assertEqual(ui["layer"].get(), "Người 1")
+        ui["layer"].set("Người 2")
+        app._occluded_range_changed()
+        self.assertEqual(self.values(app), ("Người 2", "mattrai", "Cả mắt", "0", "2"))
+        app.occluded_range_apply(True)
+        self.assertEqual(app.notice, "Đã đặt Occluded cho cả mắt ở 3 shape (frame 0–2).")
+        self.assertEqual(s.cur, 1)
+        self.assertEqual(s.flags_at(1).get(14), "occluded")
+        s.select_layer(0)
+        self.assertIsNone(s.flags_at(1).get(14))                                   # người 1 không đổi
+
+    def test_menu_and_action(self):
+        app = self.open_eyes()
+        top = app._menu
+        labels = [top.entrycget(i, "label") for i in range(top.index("end") + 1) if top.type(i) == "command"]
+        i = next(n for n, l in enumerate(labels) if l.startswith("Chép shape gần nhất"))
+        self.assertEqual(labels[i + 1:i + 3], ["Điền đoạn thiếu nhãn", "Occluded cho cả đoạn…"])
+        card = app.obj_menu
+        self.assertIn("Occluded cho cả đoạn…", [card.entrycget(i, "label") for i in range(card.index("end") + 1) if card.type(i) == "command"])
+        self.assertIn("occluded_range", sc.BY_ID)
+        self.assertEqual(sc.BY_ID["occluded_range"].keys, ())
+        self.assertEqual(sc.BY_ID["occluded_range"].group, sc.G_OBJ)
+        self.assertIn("occluded_range", app.handlers)
+
+    def test_action_handler_opens_the_box(self):
+        app = self.open_eyes()
+        app.handlers["occluded_range"](None)
+        self.assertIn("occluded_range", app._dialogs)
+
+    def test_blocked_in_qc(self):
+        self.serve(self.qc_job())
+        app = self.make_app()
+        s = self.open_job(app)
+        self.assertTrue(s.qc)
+        app.notice = ""
+        app.show_occluded_range()
+        self.assertEqual(app.notice, QC_MSG)
+        self.assertNotIn("occluded_range", app._dialogs)
+
+    def test_apply_blocked_in_qc_and_while_busy(self):
+        app = self.open_eyes()
+        app.go(0)
+        app.show_occluded_range()
+        depth = len(app.s._undo)
+        app.busy = "Đang gửi lên CVAT."
+        app.occluded_range_apply(True)
+        self.assertEqual(app.notice, "Đang gửi lên CVAT. Chờ xong rồi mới sửa nhãn được.")
+        self.assertEqual(len(app.s._undo), depth)
+        app.busy = None
+        app.s.qc = True                                                            # phiên chuyển sang QC khi hộp còn mở
+        app.occluded_range_apply(True)
+        self.assertEqual(app.notice, QC_MSG)
+        self.assertEqual(len(app.s._undo), depth)
+
+    def test_plain_job_says_shapes_only(self):
+        self.serve()                                                               # job trống: mắt chưa có kiểu shape
+        app = self.make_app()
+        self.open_job(app)
+        app.show_occluded_range()
+        self.assertEqual(app.notice, SHAPE_ONLY_MSG)
+        self.assertNotIn("occluded_range", app._dialogs)
+
+    def test_logout_teardown_closes_the_box(self):
+        app = self.open_eyes()
+        app.show_occluded_range()
+        box = app._dialogs["occluded_range"]
+        self.assertTrue(box.winfo_exists())
+        app.teardown()                                                             # đăng xuất: gỡ App khỏi root, huỷ mọi hộp
+        self.assertFalse(box.winfo_exists())
 
 
 if __name__ == "__main__":

@@ -213,6 +213,7 @@ class ObjectsMixin:
         m.add_command(label="Đổi label: hoán đổi mattrai và matphai", command=self.swap_labels)
         m.add_command(label=f"Đổi màu ({self.kl('change_color')})", command=self.object_color_next)
         m.add_command(label="Phóng vào đối tượng (Focus)", command=self.focus_object)
+        m.add_command(label="Occluded cho cả đoạn…", command=self.show_occluded_range)
         m.add_separator()
         m.add_command(label=f"Xoá mắt (Remove, {self.kl('delete')})", command=self.delete_label)
         m.add_command(label="Kết thúc nhãn từ frame này (Outside)", command=self.end_label_here)
@@ -935,4 +936,100 @@ class ObjectsMixin:
                            f"dừng ở frame {res.stopped_at} vì khớp kém ({res.score:.2f}).")
         else:
             self.notice = f"Không tạo được shape nào: khớp kém ở frame {res.stopped_at} ({res.score:.2f})."
+        self.refresh()
+
+    # ---------- Occluded cho cả đoạn (spec 6.5) ----------
+    OCCL_WHOLE = "Cả mắt"
+
+    def _has_shape_eye(self) -> bool:
+        """Job có mắt kiểu shape ở ít nhất một người."""
+        s = self.s
+        for i in range(len(s.layers)):
+            with s.layer_ctx(i):
+                if any(s.eye_kind(l) == "shape" for l in EYES):
+                    return True
+        return False
+
+    @edit_command
+    def show_occluded_range(self):
+        """Menu "Occluded cho cả đoạn…", menu ⋮ của thẻ và hành động `occluded_range`: hộp chọn người, mắt, điểm (cả mắt hoặc một điểm) và khoảng frame.
+        Mặc định: người và mắt đang chọn (không có thì mattrai), "Cả mắt", từ frame đang xem tới cuối đoạn shape liền nhau chứa nó.
+        Mở lại khi hộp đang mở thì dựng lại theo frame và mắt hiện tại. Job không có mắt shape thì không mở hộp."""
+        s = self.s
+        if not s:
+            return
+        if not self._has_shape_eye():
+            self.notice = SHAPE_ONLY_MSG
+            self.refresh(light=True)
+            return
+        label = self._selected()[0] or "mattrai"                  # `_selected` chọn luôn người của dòng đang chọn: đọc trước khi lấy `s.cur`
+        if s.eye_kind(label) != "shape":
+            label = next((l for l in EYES if s.eye_kind(l) == "shape"), label)
+        self.playing = False
+        d, _ = self._toplevel("occluded_range", "Occluded cho cả đoạn")
+        for w in d.winfo_children():
+            w.destroy()
+        d.transient(self.root)
+        people = [f"Người {i + 1}" for i in range(len(s.layers))]
+        ui = self._occl_ui = {"layer": tk.StringVar(value=people[s.cur]), "label": tk.StringVar(value=label),
+                              "point": tk.StringVar(value=self.OCCL_WHOLE), "first": tk.StringVar(), "last": tk.StringVar(),
+                              "status": tk.StringVar()}
+        pad = {"padx": (10, 6), "pady": 3}
+        for r, (text, key, values) in enumerate((("Người", "layer", people), ("Mắt", "label", list(EYES)))):
+            ttk.Label(d, text=text).grid(row=r, column=0, sticky="w", **pad)
+            box = ttk.Combobox(d, textvariable=ui[key], values=values, state="readonly", width=18)
+            box.grid(row=r, column=1, columnspan=2, sticky="we", padx=(0, 10), pady=3)
+            box.bind("<<ComboboxSelected>>", lambda e: self._occluded_range_changed())
+        ttk.Label(d, text="Điểm").grid(row=2, column=0, sticky="w", **pad)
+        points = ttk.Combobox(d, textvariable=ui["point"], state="readonly", width=18)
+        points.configure(postcommand=lambda: points.configure(values=[self.OCCL_WHOLE, *map(str, EYES[ui["label"].get()].ids)]))   # điểm của mắt đang chọn trong hộp
+        points.grid(row=2, column=1, columnspan=2, sticky="we", padx=(0, 10), pady=3)
+        for r, (text, key) in enumerate((("Từ frame", "first"), ("Tới frame", "last")), start=3):
+            ttk.Label(d, text=text).grid(row=r, column=0, sticky="w", **pad)
+            ttk.Entry(d, textvariable=ui[key], width=8).grid(row=r, column=1, sticky="w", pady=3)
+        ttk.Button(d, text="Đặt Occluded", command=lambda: self.occluded_range_apply(True)).grid(row=5, column=0, columnspan=2, sticky="we", padx=10, pady=(8, 4))
+        ttk.Button(d, text="Bỏ Occluded", command=lambda: self.occluded_range_apply(False)).grid(row=5, column=2, sticky="we", padx=(0, 10), pady=(8, 4))
+        ttk.Label(d, textvariable=ui["status"], wraplength=320, justify="left").grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 8))
+        d.bind("<Escape>", lambda e: d.destroy())
+        d.geometry(f"+{self.root.winfo_rootx() + 70}+{self.root.winfo_rooty() + 140}")
+        self._occluded_range_changed()
+
+    def _occluded_range_changed(self):
+        """Đổi người hoặc mắt trong hộp Occluded: điểm về "Cả mắt", khoảng frame về mặc định của mắt đó (frame đang xem tới cuối đoạn shape chứa nó)."""
+        ui, s = self._occl_ui, self.s
+        if not ui or not s:
+            return
+        with s.layer_ctx(int(ui["layer"].get().split()[-1]) - 1):
+            last = s.shape_run(ui["label"].get(), self.f)[1]
+        ui["point"].set(self.OCCL_WHOLE)
+        ui["first"].set(str(self.f))
+        ui["last"].set(str(last))
+        ui["status"].set("")
+
+    @edit_command
+    def occluded_range_apply(self, on: bool):
+        """Nút "Đặt Occluded" (`on`) và "Bỏ Occluded" của hộp: áp cho người, mắt, điểm và khoảng frame đang chọn trong hộp (`Session.set_occluded_range`).
+        Kết quả (hay lời lỗi, khi đó nhãn không đổi) ghi ở dòng trạng thái của hộp và ở thông báo."""
+        ui, s = self._occl_ui, self.s
+        if not ui or not s:
+            return
+        try:
+            first, last = int(ui["first"].get()), int(ui["last"].get())
+        except ValueError:
+            ui["status"].set("Từ frame và Tới frame phải là số nguyên.")
+            return
+        label, point = ui["label"].get(), ui["point"].get()
+        pids = None if point == self.OCCL_WHOLE else [int(point)]
+        try:
+            s.select_layer(int(ui["layer"].get().split()[-1]) - 1)
+            n, skipped = s.set_occluded_range(label, pids, first, last, on)
+        except ValueError as err:
+            if str(err) == QC_MSG:
+                raise                                             # `edit_command` báo QC_MSG như mọi lệnh sửa khác
+            ui["status"].set(str(err))
+            return
+        what = "cả mắt" if pids is None else f"điểm {pids[0]}"
+        tail = f"; bỏ qua {skipped} điểm đang Outside." if skipped else "."
+        self.notice = f"Đã {'đặt' if on else 'bỏ'} Occluded cho {what} ở {n} shape (frame {first}–{last}){tail}"
+        ui["status"].set(self.notice)
         self.refresh()

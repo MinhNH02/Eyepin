@@ -79,6 +79,8 @@ ACTIONS: tuple[Action, ...] = (
            "menu trên; gán phím trong Cài đặt nếu cần"),
     Action("fill_gap", G_OBJ, "Điền đoạn thiếu nhãn bằng bám tiến (mắt shape)", (), "",
            "đoạn của dòng Thiếu nhãn đang chọn, hoặc đoạn chứa frame này; gán phím trong Cài đặt nếu cần"),
+    Action("occluded_range", G_OBJ, "Occluded cho cả đoạn shape (hộp chọn mắt, điểm và khoảng frame)", (), "",
+           "menu trên và menu ⋮ của thẻ; gán phím trong Cài đặt nếu cần"),
     Action("delete_frame", G_FRAME, "Xoá / khôi phục frame hiện tại", ("<Alt-Delete>",), "Alt+Del"),
     Action("search_frame", G_FRAME, "Tìm frame theo tên", ("<Control-f>",), "", "CVAT có hộp Search frame by name"),
     Action("copy", G_OBJ, "Sao chép nhãn hai mắt của frame", ("<Control-c>",), "Ctrl+C"),
