@@ -756,7 +756,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin, JobIssu
                 self.s.clear_old_eyes()
                 cleared = True
             self.s.load_state(data)                      # lỗi CVAT khi bám lại (mất kết nối, 401): load_state trả phiên về như trước
-        except (OSError, ValueError, KeyError, TypeError, CvatError) as err:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, CvatError) as err:      # AttributeError: file phiên sai kiểu (`cvat`, bộ đối tượng không phải dict)
             if cleared:
                 self.s.restore_old_eyes()                # khôi phục lỗi: nhãn mắt cũ còn nguyên, vẫn ở chế độ QC
             self.notice = f"Không khôi phục được phiên đã lưu: {err}"
@@ -1409,6 +1409,13 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin, JobIssu
         self.draft, self.draft_drag, self._box0 = None, None, None
         self.items, self.issue_rows = [], []
         self.hidden_objs.clear()                         # chỉ số người của phiên cũ không còn đúng
+        box = self._dialogs.pop("occluded_range", None)  # hộp "Occluded cho cả đoạn" chọn người, mắt, frame của phiên cũ: đóng, không để áp nhầm sang phiên mới
+        if box is not None:
+            try:
+                box.destroy()
+            except tk.TclError:
+                pass
+        self._occl_ui = {}
         self._issues_sig = ()
         self._turns_seen, self._turn_target = set(), None
         self.turn_bar.place_forget()

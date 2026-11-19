@@ -1000,7 +1000,11 @@ class ObjectsMixin:
         ui, s = self._occl_ui, self.s
         if not ui or not s:
             return
-        with s.layer_ctx(int(ui["layer"].get().split()[-1]) - 1):
+        layer = int(ui["layer"].get().split()[-1]) - 1
+        if not 0 <= layer < len(s.layers):                        # người này không còn (như `occluded_range_apply`): báo ở hộp, không ném lỗi
+            ui["status"].set("Không có người này trong job đang mở.")
+            return
+        with s.layer_ctx(layer):
             last = s.shape_run(ui["label"].get(), self.f)[1]
         ui["point"].set(self.OCCL_WHOLE)
         ui["first"].set(str(self.f))

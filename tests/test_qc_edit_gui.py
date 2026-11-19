@@ -44,9 +44,9 @@ def eyes_job(mattrai, matphai):
 
 
 class QcEditCase(G.CvatGuiCase):
-    def open_eyes(self, mattrai=(0, 1, 2, 3, 4, 7), matphai=ALL):
-        """Mở job toàn shape; mặc định mattrai thiếu frame 5–6, matphai đủ."""
-        self.serve(eyes_job(mattrai, matphai))
+    def open_eyes(self, mattrai=(0, 1, 2, 3, 4, 7), matphai=ALL, extra=()):
+        """Mở job 7 toàn shape; mặc định mattrai thiếu frame 5–6, matphai đủ. `extra`: các job khác dựng thêm trên cùng server giả."""
+        self.serve(eyes_job(mattrai, matphai), *extra)
         app = self.make_app()
         app.adopt_asked, app.adopt_answer = [], True
         app.ask_restore_adopted = lambda text: True
@@ -566,6 +566,33 @@ class TestOccludedRange(QcEditCase):
         app.show_occluded_range()
         self.assertEqual(app.notice, SHAPE_ONLY_MSG)
         self.assertNotIn("occluded_range", app._dialogs)
+
+    def test_box_closed_when_session_replaced(self):
+        app = self.open_eyes(extra=[self.empty_job(8)])
+        app.show_occluded_range()
+        box = app._dialogs["occluded_range"]
+        self.assertTrue(box.winfo_exists())
+        self.assertTrue(app._occl_ui)
+        self.open_job(app, 8)                                                      # mở job khác: phiên cũ bị thay
+        self.assertFalse(box.winfo_exists())
+        self.assertNotIn("occluded_range", app._dialogs)
+        self.assertEqual(app._occl_ui, {})
+
+    def test_stale_person_choice_does_not_raise(self):
+        app = self.open_eyes()
+        s = app.s
+        s.add_layer()
+        s.select_layer(0)
+        app.go(0)
+        app.show_occluded_range()
+        ui = app._occl_ui
+        ui["layer"].set("Người 2")
+        s.layers.pop()                                                             # người 2 không còn mà hộp còn mở
+        s.select_layer(0)
+        ui["label"].set("matphai")
+        app._occluded_range_changed()                                              # như chọn mắt khác trong hộp: không được ném lỗi
+        self.assertEqual(ui["status"].get(), "Không có người này trong job đang mở.")
+        self.assertEqual(s.cur, 0)
 
     def test_logout_teardown_closes_the_box(self):
         app = self.open_eyes()

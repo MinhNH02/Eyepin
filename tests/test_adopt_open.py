@@ -249,6 +249,24 @@ class TestGuiRestore(AdoptGuiCase):
         self.assertIn("Không khôi phục được phiên đã lưu: hỏng", app.notice)
         self.assertIn(INTRO, app.notice)
 
+    def test_corrupt_session_file_does_not_break_open(self):
+        """File phiên sai kiểu (`cvat` hoặc một bộ đối tượng không phải dict) báo "không khôi phục được" và vẫn mở xong cửa sổ."""
+        self.serve_shapes()
+        path = self.save_edited()
+        with open(path, encoding="utf-8") as fh:
+            good = json.load(fh)
+        for name, damage in (("cvat", {"cvat": 5}), ("layers", {"layers": [5]})):
+            with self.subTest(name):
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(dict(good, adopted=True, unsent=True, **damage), fh)
+                app = self.make_app()
+                s = self.open_job(app)
+                self.assertTrue(app.notice.startswith("Không khôi phục được phiên đã lưu"), app.notice)
+                self.assertEqual(app.adopt_asked, [])
+                self.assertTrue(s.adopted)
+                self.assertEqual(len(s.build_shapes()), 2)                         # phiên vẫn là bản vừa nạp từ CVAT
+                self.assertEqual(app.total.get(), f"/ {N - 1}")                    # `_show_session` đã chạy
+
     def test_old_qc_session_file_is_skipped(self):
         self.serve_shapes()
         path = self.save_edited()
