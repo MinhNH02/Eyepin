@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 import os
 import tempfile
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
@@ -37,6 +38,10 @@ TOL_KEPT = 0.005                     # px: một shape của job đã nạp đư
 TOL_KEPT_CHECK = 0.01                # px: sau khi gửi, shape "giữ nguyên" phải còn đúng như trước khi gửi trong chừng này (làm tròn hai chữ số)
 MAX_MISMATCHES = 40                  # liệt kê tối đa chừng này chỗ lệch; còn lại chỉ đếm
 _CVAT_FAILED = "CVAT báo thất bại"   # đầu thông điệp của cvatapi khi CVAT trả status `failed` (khác với mất kết nối: kết quả chưa rõ)
+_TWO_SHAPES_REASON = "Có hai shape cùng nhãn mắt ở cùng frame"        # đầu lý do 4 của `adopt.check` (adopt nhập module này nên không nhập được tên của nó)
+UNREVIEWED_LINE = "Còn {n} shape điền tự động chưa xem; sau khi gửi và mở lại job, danh sách này không còn."
+TWO_PEOPLE_LINE = "Có hai người cùng vẽ một mắt ở cùng frame: lần mở sau EyePin sẽ mở job ở chế độ chỉ xem."
+JOB_CHANGED_MSG = "Job đã đổi trên CVAT nên không gửi kiểu sửa tại chỗ được: {reasons} Hãy mở lại job."
 
 
 @dataclass
@@ -58,10 +63,12 @@ class SendPlan:
     adopted: bool = False                                        # phiên đã nạp shape mắt của job (`Session.adopted`): gửi là sửa các shape đó
     counts: dict | None = None                                   # chỉ khi `adopted`: {"server", "kept", "edited", "added", "removed"} (`count_changes`)
     kept: list = field(default_factory=list, repr=False)         # chỉ khi `adopted`: shape của job được đếm "giữ nguyên" (dạng `_json_eye_shapes`)
+    unreviewed: int = 0                                          # chỉ khi `adopted`: số shape điền tự động chưa xem của mọi người (`Session.unreviewed`)
+    two_people: bool = False                                     # chỉ khi `adopted`: hai shape cùng nhãn mắt ở cùng frame (hai người): lần mở sau job vào chế độ chỉ xem
 
     def needs_warning(self) -> bool:
         if self.adopted:                                         # gửi lại chỉ làm mất shape bị bỏ; sửa và thêm không phải điều đáng hỏi
-            return self.counts["removed"] > 0 or self.changed_on_server or self.mixed_types
+            return (self.counts["removed"] > 0 or self.changed_on_server or self.mixed_types or self.unreviewed > 0 or self.two_people)
         return self.changed_on_server or not self.replaced.empty() or self.mixed_types
 
     def text(self) -> str:
@@ -69,6 +76,10 @@ class SendPlan:
             c = self.counts
             lines = [f"Job có {c['server']} shape mắt trên CVAT. Sẽ gửi {self.shapes} shape: giữ nguyên {c['kept']}, sửa {c['edited']}, "
                      f"thêm {c['added']}, bỏ {c['removed']}."]
+            if self.unreviewed:                                  # danh sách "chưa xem" chỉ sống trong phiên: gửi xong mở lại là mất
+                lines.append(UNREVIEWED_LINE.format(n=self.unreviewed))
+            if self.two_people:
+                lines.append(TWO_PEOPLE_LINE)
         else:
             what = f"{self.keyframes} keyframe và {self.shapes} shape mắt mới" if self.shapes else f"{self.keyframes} keyframe mắt mới"
             lines = [f"EyePin sẽ thay toàn bộ nhãn của job #{self.job_id} trên CVAT bằng nhãn nền hiện có cộng {what}."]
@@ -172,7 +183,9 @@ def prepare(session: Session, client: CvatClient) -> SendPlan:
     """Hỏi CVAT mọi điều cần biết trước khi gửi (không ghi gì). Ném CvatError/LoginNeeded nếu không hỏi được, nếu nhãn tool tính đang cũ
     (`session.stale`), hoặc khi gửi chắc chắn làm mất nhãn không phải mắt: nhãn trên frame CVAT đã xoá (bản xuất bỏ chúng), tag khi nền là
     "CVAT for video" (định dạng này không ghi tag), nhãn nằm ngoài phạm vi frame của job. Phiên đã nạp shape (`session.adopted`): thêm `counts`
-    và `kept` (`count_changes`), bản chụp dựng từ JSON; ném CvatError khi một shape mắt của job không dựng lại được (không đủ 8 điểm, ngoài job)."""
+    và `kept` (`count_changes`), bản chụp dựng từ JSON; `unreviewed` (shape điền tự động chưa xem, mọi người) và `two_people` (hai người cùng một mắt
+    ở cùng frame); ném CvatError khi job đã đổi trên CVAT thành thứ `adopt.check` không cho nạp (trừ lý do hai người cùng frame: có `two_people` lo)
+    hoặc khi một shape mắt của job không dựng lại được (không đủ 8 điểm, ngoài job)."""
     job_id = _require_cvat(session)
     if getattr(session, "stale", False):
         raise CvatError(STALE_MSG)
@@ -191,6 +204,12 @@ def prepare(session: Session, client: CvatClient) -> SendPlan:
         raise CvatError(f"Job #{job_id} có nhãn không phải mắt nằm trên frame đã xoá trong CVAT: {'; '.join(on_deleted[:10])}{more}. "
                         "CVAT không xuất các nhãn này nên gửi (import thay cả job) sẽ xoá chúng và bản chụp trước khi gửi cũng không có chúng. "
                         "Không gửi. Hãy khôi phục các frame đó hoặc chuyển/xoá các nhãn đó trên CVAT trước.")
+    if session.adopted:                                       # job đã đổi trên CVAT thành thứ không sửa tại chỗ được: bản chụp không dựng lại được nên không hứa khôi phục
+        from . import adopt                                   # adopt nhập module này: nhập muộn để khỏi vòng
+        nums = session.source.frame_numbers
+        reasons = [r for r in adopt.check(aj, labels, nums, {nums[i] for i in session.source.deleted}) if not r.startswith(_TWO_SHAPES_REASON)]
+        if reasons:                                           # lý do hai người cùng frame bỏ qua: job hai người gửi lại trong cùng phiên do cảnh báo `two_people` lo
+            raise CvatError(JOB_CHANGED_MSG.format(reasons=" ".join(reasons)))
     if base == VIDEO and aj.get("tags"):
         raise CvatError(f"Job #{job_id} có {len(aj['tags'])} tag (nhãn gắn cả frame) và có track không phải mắt nên nhãn nền phải gửi theo "
                         "CVAT for video, mà định dạng này không chứa tag: gửi sẽ xoá mọi tag và khôi phục cũng không lấy lại được. Không gửi.")
@@ -209,6 +228,7 @@ def prepare(session: Session, client: CvatClient) -> SendPlan:
         keyframes = 0                                         # chưa ghim gì: send sẽ từ chối
     sent = session.build_shapes()
     counts, kept, snapshot = None, [], base_xml
+    unreviewed, two_people = 0, False
     if session.adopted:                                       # shape mắt của job được sửa tại chỗ: đếm so với JSON lúc này, bản chụp giữ shape là shape
         nums = session.source.frame_numbers
         counts, kept = count_changes(sent, _json_eye_shapes(aj, labels), nums)
@@ -216,11 +236,15 @@ def prepare(session: Session, client: CvatClient) -> SendPlan:
             snapshot = adopted_snapshot(ann, aj, labels, nums, session.names, (session.width, session.height))
         except ValueError as e:
             raise CvatError(f"{e} Không gửi.") from e
+        for i in range(len(session.layers)):                  # shape điền tự động chưa xem của MỌI người (người đang chọn không đổi)
+            with session.layer_ctx(i):
+                unreviewed += sum(len(session.unreviewed(l)) for l in EYES)
+        two_people = any(n > 1 for n in Counter((sh.label, sh.key.frame) for sh in sent).values())
     updated = job.get("updated_date")
     return SendPlan(changed_on_server=updated != session.cvat.get("updated"), replaced=_eye_labels_from_json(aj, labels), mixed_types=mixed,
                     keyframes=keyframes, base_format=base, job_id=job_id, opened_updated=session.cvat.get("updated"), server_updated=updated,
                     ann=ann, base_xml=snapshot, non_eye=_count_non_eye(aj, eye_ids), label_names=names,
-                    shapes=len(sent), labels=labels, adopted=session.adopted, counts=counts, kept=kept)
+                    shapes=len(sent), labels=labels, adopted=session.adopted, counts=counts, kept=kept, unreviewed=unreviewed, two_people=two_people)
 
 
 @dataclass

@@ -286,6 +286,110 @@ class TestSendAdopted(AdoptedJob):
         self.assertIn("không đủ 8 điểm", str(ctx.exception))
 
 
+class TestSendWarnings(AdoptedJob):
+    """Ba cảnh báo khi gửi job đã nạp (lượt sửa cuối): shape điền tự động chưa xem, hai người cùng frame, job đã đổi trên CVAT."""
+
+    UNREVIEWED = "Còn {n} shape điền tự động chưa xem; sau khi gửi và mở lại job, danh sách này không còn."
+    TWO_PEOPLE = "Có hai người cùng vẽ một mắt ở cùng frame: lần mở sau EyePin sẽ mở job ở chế độ chỉ xem."
+    REFUSED = "Job đã đổi trên CVAT nên không gửi kiểu sửa tại chỗ được: "
+
+    def open_for_fill(self):
+        """mattrai có shape ở 0, 1, 2, 5; matphai ở mọi frame: frame 3 và 4 của mattrai điền được từ frame 2."""
+        return self.open([A.skeleton("mattrai", f) for f in (0, 1, 2, 5)] + [A.skeleton("matphai", f) for f in range(N)])
+
+    # ---- shape điền tự động chưa xem ----
+    def test_unreviewed_fills_are_named_in_the_send_text(self):
+        s = self.open_for_fill()
+        res = s.fill_gap("mattrai", 3, 4)
+        self.assertEqual(res.created, [3, 4])
+        plan = cvatsync.prepare(s, self.cl)
+        self.assertEqual(plan.unreviewed, 2)
+        self.assertIn(self.UNREVIEWED.format(n=2), plan.text().split("\n"))
+        self.assertTrue(plan.needs_warning())
+        s.mark_reviewed("mattrai", [3])
+        again = cvatsync.prepare(s, self.cl)
+        self.assertEqual(again.unreviewed, 1)
+        self.assertIn(self.UNREVIEWED.format(n=1), again.text().split("\n"))
+
+    def test_unreviewed_counts_every_person(self):
+        s = self.open_for_fill()
+        s.fill_gap("mattrai", 3, 4)                                                # người 1 điền hai shape
+        s.add_layer()                                                              # người đang chọn là người 2, không có shape điền
+        self.assertEqual(s.unreviewed("mattrai"), [])
+        plan = cvatsync.prepare(s, self.cl)
+        self.assertEqual(plan.unreviewed, 2)
+        self.assertEqual(s.cur, 1)                                                 # prepare không đổi người đang chọn
+
+    def test_no_unreviewed_line_when_none(self):
+        s = self.open()
+        self.edit_one_and_add_one(s)
+        plan = cvatsync.prepare(s, self.cl)
+        self.assertEqual(plan.unreviewed, 0)
+        self.assertNotIn("chưa xem", plan.text())
+        self.assertFalse(plan.needs_warning())
+
+    # ---- hai người cùng một mắt ở cùng frame ----
+    def test_two_people_same_frame_warns(self):
+        s = self.open()
+        s.add_layer()
+        s.pin_eye(1, "mattrai", {i: T.pins_at(1)[i] for i in EYES["mattrai"].pins})      # người 2 vẽ mattrai ở frame 1 như người 1
+        plan = cvatsync.prepare(s, self.cl)
+        self.assertTrue(plan.two_people)
+        self.assertIn(self.TWO_PEOPLE, plan.text().split("\n"))
+        self.assertTrue(plan.needs_warning())
+
+    def test_two_people_different_frames_no_warning(self):
+        s = self.open()
+        s.add_layer()
+        s.pin_eye(6, "mattrai", {i: T.pins_at(6)[i] for i in EYES["mattrai"].pins})      # frame 6: mattrai chưa có shape nào
+        s.pin_eye(1, "matphai", {i: T.pins_at(1)[i] for i in EYES["matphai"].pins})      # khác nhãn với mattrai ở frame 1
+        plan = cvatsync.prepare(s, self.cl)
+        self.assertFalse(plan.two_people)
+        self.assertNotIn("hai người", plan.text())
+        self.assertFalse(plan.needs_warning())
+
+    def test_single_person_is_not_flagged(self):
+        plan = cvatsync.prepare(self.open(), self.cl)
+        self.assertFalse(plan.two_people)
+        self.assertEqual(plan.unreviewed, 0)
+
+    # ---- job đã đổi trên CVAT thành thứ không sửa tại chỗ được ----
+    def test_prepare_refuses_when_job_gained_an_eye_track(self):
+        s = self.open()
+        self.job.annotations_json["tracks"].append(A.eye_track("mattrai", [4]))         # ai đó vẽ track mắt trên web sau lúc mở
+        with self.assertRaises(CvatError) as ctx:
+            cvatsync.prepare(s, self.cl)
+        self.assertEqual(str(ctx.exception), self.REFUSED + A.r1(1) + " Hãy mở lại job.")
+
+    def test_prepare_refuses_when_shape_gained_attributes(self):
+        s = self.open()
+        self.job.annotations_json["shapes"][0]["attributes"] = [{"spec_id": 1, "value": "x"}]     # shape mattrai ở frame 1
+        with self.assertRaises(CvatError) as ctx:
+            cvatsync.prepare(s, self.cl)
+        self.assertEqual(str(ctx.exception), self.REFUSED + A.r5("1") + " Hãy mở lại job.")
+
+    def test_prepare_ok_after_own_previous_send(self):
+        s = self.open()
+        self.edit_one_and_add_one(s)
+        self.cvat_stores()
+        self.assertTrue(cvatsync.send(s, self.cl, cvatsync.prepare(s, self.cl)).ok)
+        x, y = s.pins[3][14]
+        s.move_point(3, 14, (x + MOVE, y))                                             # sửa tiếp rồi gửi lần hai trong cùng phiên
+        plan = cvatsync.prepare(s, self.cl)                                            # JSON giờ là điều lần gửi đầu để lại: không từ chối
+        self.assertEqual(plan.counts["removed"], 0)
+        res = cvatsync.send(s, self.cl, plan)
+        self.assertTrue(res.ok, (res.message, res.mismatches))
+
+    def test_prepare_ignores_two_people_reason(self):
+        """Job hai người cùng frame đã gửi từ phiên này (JSON có hai shape cùng nhãn cùng frame): lý do 4 của `adopt.check` không phải
+        lý do từ chối, cảnh báo hai người đã nói điều đó."""
+        s = self.open()
+        self.job.annotations_json["shapes"].append(A.skeleton("mattrai", 1, id=555))
+        plan = cvatsync.prepare(s, self.cl)
+        self.assertTrue(plan.adopted)
+        self.assertEqual(plan.counts["server"], 5)
+
+
 class TestAdoptedSnapshot(AdoptedJob):
     def test_snapshot_keeps_eye_shapes(self):
         shapes = [A.skeleton("mattrai", 1, flags={16: "outside", 18: "occluded"}), A.skeleton("matphai", 2), A.box(4)]
