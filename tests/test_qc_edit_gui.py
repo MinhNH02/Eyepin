@@ -489,6 +489,33 @@ class TestOccludedRange(QcEditCase):
         s.select_layer(0)
         self.assertIsNone(s.flags_at(1).get(14))                                   # người 1 không đổi
 
+    def test_error_keeps_the_selected_person(self):
+        app = self.open_eyes()
+        s = app.s
+        s.add_layer()
+        for f in (0, 1, 2):
+            s.pin_eye(f, "mattrai", {i: T.pins_at(f)[i] for i in EYES["mattrai"].pins})
+        s.select_layer(0)
+        app.refresh()
+        app.go(0)
+        app.show_occluded_range()
+        ui = app._occl_ui
+        ui["layer"].set("Người 2")
+        app._occluded_range_changed()
+        depth, flags = len(s._undo), {f: dict(v) for f, v in s.flags.items()}
+        for first, last, want in (("4", "1", RANGE_MSG), ("0", "99", f"frame ngoài phạm vi 0–{N - 1}")):
+            ui["first"].set(first)
+            ui["last"].set(last)
+            app.occluded_range_apply(True)
+            self.assertEqual(ui["status"].get(), want)
+            self.assertEqual(s.cur, 0)                                             # lỗi: người đang chọn không đổi
+            self.assertEqual(len(s._undo), depth)
+            self.assertEqual({f: dict(v) for f, v in s.flags.items()}, flags)
+        s.layers.pop()                                                             # hộp còn mở mà người 2 không còn
+        app.occluded_range_apply(True)
+        self.assertEqual(ui["status"].get(), "Không có người này trong job đang mở.")
+        self.assertEqual((s.cur, len(s._undo)), (0, depth))
+
     def test_menu_and_action(self):
         app = self.open_eyes()
         top = app._menu

@@ -1020,14 +1020,19 @@ class ObjectsMixin:
             return
         label, point = ui["label"].get(), ui["point"].get()
         pids = None if point == self.OCCL_WHOLE else [int(point)]
+        layer = int(ui["layer"].get().split()[-1]) - 1
+        if not 0 <= layer < len(s.layers):                        # hộp mở từ phiên cũ: người này không còn
+            ui["status"].set("Không có người này trong job đang mở.")
+            return
         try:
-            s.select_layer(int(ui["layer"].get().split()[-1]) - 1)
-            n, skipped = s.set_occluded_range(label, pids, first, last, on)
+            with s.layer_ctx(layer):                              # lỗi thì người đang chọn không đổi; chỉ chọn người đó khi đã ghi xong
+                n, skipped = s.set_occluded_range(label, pids, first, last, on)
         except ValueError as err:
             if str(err) == QC_MSG:
                 raise                                             # `edit_command` báo QC_MSG như mọi lệnh sửa khác
             ui["status"].set(str(err))
             return
+        s.select_layer(layer)
         what = "cả mắt" if pids is None else f"điểm {pids[0]}"
         tail = f"; bỏ qua {skipped} điểm đang Outside." if skipped else "."
         self.notice = f"Đã {'đặt' if on else 'bỏ'} Occluded cho {what} ở {n} shape (frame {first}–{last}){tail}"
