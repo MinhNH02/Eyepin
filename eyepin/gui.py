@@ -61,6 +61,19 @@ def _hex(bgr) -> str:
     return "#%02x%02x%02x" % (int(bgr[2]), int(bgr[1]), int(bgr[0]))
 
 
+def _saved_track_pins(data: dict) -> bool:
+    """File phiên có mắt kiểu track đã ghim ở bộ đối tượng nào đó (mắt không ghi `kind`, như file bản 1, 2, tính là track). File như vậy
+    không phải của một phiên toàn shape, nên không khôi phục lên phiên đã nạp shape từ CVAT được."""
+    parts = data.get("layers") if data.get("version", 1) >= 2 else [data]
+    for p in parts or []:
+        kinds = p.get("kind") or {}
+        for label, spec in EYES.items():
+            ids = {str(i) for i in spec.ids}
+            if kinds.get(label) != "shape" and any(ids & set(pts) for pts in (p.get("pins") or {}).values()):
+                return True
+    return False
+
+
 def _unbind_one(w, tag: str, seq: str, funcid: str | None):
     """Gỡ đúng MỘT bind (`funcid` do `bind(..., add="+")` trả về) của `seq` trên thẻ `tag`, giữ các bind khác. Không dùng `unbind(seq, funcid)`:
     trên Python 3.12 nó gỡ hết mọi bind của `seq`."""
@@ -750,23 +763,28 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         return True
 
     def _restore_adopted(self, data: dict) -> bool:
-        """`try_restore` cho phiên đã nạp shape từ CVAT (`Session.adopted`). File phiên không phải của phiên đã nạp (lưu lúc job còn ở chế độ chỉ xem)
-        thì bỏ qua và báo; file không còn sửa chưa gửi thì bỏ qua im lặng (bản vừa nạp từ CVAT đã mới hơn). Còn lại hỏi trước vì khôi phục thay
+        """`try_restore` cho phiên đã nạp shape từ CVAT (`Session.adopted`). File phiên không ghi `"adopted"` mà có mắt track đã ghim (lưu lúc
+        job còn ở chế độ chỉ xem, hoặc phiên thường kiểu track) thì bỏ qua và báo; file không còn sửa chưa gửi thì bỏ qua im lặng (bản vừa nạp từ
+        CVAT đã mới hơn). File không ghi `"adopted"` mà toàn shape và còn sửa chưa gửi (phiên thường đã gửi shape rồi vẽ tiếp, mở lại thì job
+        thành job đã nạp) được hỏi như file của phiên đã nạp: bỏ qua thì lần tự lưu kế sẽ ghi đè công chưa gửi. Hỏi trước vì khôi phục thay
         shape vừa nạp; lỗi khi nạp thì ném lên cho `try_restore` báo (phiên về như trước)."""
         s = self.s
-        if data.get("adopted") is not True:
+        if data.get("adopted") is not True and _saved_track_pins(data):
             self.notice = "Bỏ qua phiên lưu cũ (lưu khi job còn ở chế độ chỉ xem)."
             return False
         if data.get("unsent") is not True:
             return False
         saved = adopt.saved_shape_count(data)
         text = f"Khôi phục sẽ thay {len(s.build_shapes())} shape vừa nạp từ CVAT bằng bản đã lưu ({saved} shape, có sửa chưa gửi)."
-        if (data.get("cvat") or {}).get("updated") != (s.cvat or {}).get("updated"):
+        changed = (data.get("cvat") or {}).get("updated") != (s.cvat or {}).get("updated")
+        if changed:
             text += "\nJob đã bị sửa trên CVAT sau lúc lưu; khôi phục rồi gửi sẽ đè các thay đổi đó."
         if not self.ask_restore_adopted(text):
             return False
         s.load_state(data)
         self.notice = f"Đã khôi phục phiên làm việc: {saved} shape."
+        if changed:
+            self.notice += " Chú ý: job đã bị sửa trên CVAT kể từ lần làm việc trước; gửi lên sẽ ghi đè các sửa đó."
         self._just_restored = True
         return True
 

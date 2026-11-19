@@ -12,15 +12,18 @@ from unittest import mock
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from eyepin.cvatsource import open_job  # noqa: E402
+from eyepin.geometry import EYES  # noqa: E402
 from fake_cvat import FakeJob  # noqa: E402
 import test_adopt as A  # noqa: E402
 import test_gui_cvat as G  # noqa: E402
+import test_tracking as T  # noqa: E402
 from test_cvatsource import IMAGES, Base, eye_shape_image, eye_track, xml_of  # noqa: E402
 
 N = G.N
 INTRO = "Đã nạp 2 shape mắt của job để sửa (mattrai 1, matphai 1); thiếu nhãn ở 0 đoạn."
 OLD_FILE = "Bỏ qua phiên lưu cũ (lưu khi job còn ở chế độ chỉ xem)."
 CHANGED = "\nJob đã bị sửa trên CVAT sau lúc lưu; khôi phục rồi gửi sẽ đè các thay đổi đó."
+CHANGED_NOTICE = " Chú ý: job đã bị sửa trên CVAT kể từ lần làm việc trước; gửi lên sẽ ghi đè các sửa đó."
 
 
 def two_shapes():
@@ -91,6 +94,15 @@ class AdoptGuiCase(G.CvatGuiCase):
     def serve_shapes(self, **kw):
         return self.serve(fake_job(shapes=two_shapes(), xml=two_shape_xml(), **kw))
 
+    def serve_plain(self):
+        """Job 7 còn trống trên server (phiên thường: không nạp gì). `shape_only` đổi nó thành job toàn shape như sau khi gửi."""
+        return self.serve(fake_job())
+
+    @staticmethod
+    def shape_only(job):
+        job.annotations_json = A.job(shapes=two_shapes())
+        job.xml = two_shape_xml()
+
     def save_edited(self):
         """Mở job 7 toàn shape, xoá shape mattrai ở frame 2 (còn 1 shape, có công chưa gửi) rồi lưu phiên. Trả về đường dẫn file phiên."""
         app = self.make_app()
@@ -140,6 +152,19 @@ class TestGuiOpen(AdoptGuiCase):
         self.assertEqual(app.draw_kind_choice("mattrai"), (app.draw_kind, False))
 
 
+class TestRestoreDialog(AdoptGuiCase):
+    def test_real_dialog_defaults_to_no(self):
+        self.serve_shapes()
+        app = self.make_app()
+        self.open_job(app)
+        with mock.patch("tkinter.messagebox.askyesno", return_value=False) as ask:
+            self.assertFalse(type(app).ask_restore_adopted(app, "câu hỏi"))
+        title, text = ask.call_args.args
+        self.assertEqual(title, "Khôi phục phiên")
+        self.assertTrue(text.startswith("câu hỏi"), text)
+        self.assertEqual(ask.call_args.kwargs.get("default"), "no")
+
+
 class TestGuiRestore(AdoptGuiCase):
     def test_reopen_after_send_does_not_offer_restore(self):
         self.serve_shapes()
@@ -183,6 +208,7 @@ class TestGuiRestore(AdoptGuiCase):
         self.open_job(app)
         self.assertEqual(len(app.adopt_asked), 1)
         self.assertTrue(app.adopt_asked[0].endswith("(1 shape, có sửa chưa gửi)." + CHANGED), app.adopt_asked[0])
+        self.assertEqual(app.notice, "Đã khôi phục phiên làm việc: 1 shape." + CHANGED_NOTICE)
 
     def test_restore_does_not_warn_when_job_unchanged(self):
         self.serve_shapes()
@@ -190,6 +216,7 @@ class TestGuiRestore(AdoptGuiCase):
         app = self.make_app()
         self.open_job(app)
         self.assertNotIn("đã bị sửa trên CVAT", app.adopt_asked[0])
+        self.assertEqual(app.notice, "Đã khôi phục phiên làm việc: 1 shape.")
 
     def test_declined_restore_keeps_adopted_shapes_and_shows_intro(self):
         self.serve_shapes()
@@ -218,7 +245,10 @@ class TestGuiRestore(AdoptGuiCase):
         path = self.save_edited()
         with open(path, encoding="utf-8") as fh:
             saved = json.load(fh)
-        del saved["adopted"]                                                   # file lưu lúc job còn ở chế độ chỉ xem
+        del saved["adopted"]                                                   # file bản 2 (chưa có `kind`): mọi mắt có ghim là track
+        saved["version"] = 2
+        for layer in saved["layers"]:
+            del layer["kind"], layer["shape_ids"]
         with open(path, "w", encoding="utf-8") as fh:
             json.dump(saved, fh)
         app = self.make_app()
@@ -226,6 +256,73 @@ class TestGuiRestore(AdoptGuiCase):
         self.assertEqual(app.adopt_asked, [])
         self.assertTrue(app.notice.startswith(OLD_FILE + " "), app.notice)
         self.assertIn(INTRO, app.notice)
+        self.assertEqual(len(s.build_shapes()), 2)
+
+    def test_plain_track_session_file_is_skipped(self):
+        job = self.serve_plain()
+        app1 = self.make_app()
+        self.open_job(app1)
+        self.draw(app1)                                                        # phiên thường, mắt kiểu track
+        app1.save_work()
+        with open(app1.state_path(), encoding="utf-8") as fh:
+            saved = json.load(fh)
+        self.assertNotIn("adopted", saved)
+        self.assertIs(saved["unsent"], True)
+        self.shape_only(job)                                                   # job giờ chỉ có shape: mở lại là phiên đã nạp
+        app2 = self.make_app()
+        s2 = self.open_job(app2)
+        self.assertTrue(s2.adopted)
+        self.assertEqual(app2.adopt_asked, [])
+        self.assertTrue(app2.notice.startswith(OLD_FILE + " "), app2.notice)
+        self.assertIn(INTRO, app2.notice)
+        self.assertEqual(len(s2.build_shapes()), 2)
+
+    def plain_shape_file(self):
+        """Phiên thường vẽ một shape mattrai ở frame 2 (chưa gửi) rồi lưu; sau đó job trên server thành job toàn shape. Trả về (job, đường dẫn file)."""
+        job = self.serve_plain()
+        app1 = self.make_app()
+        s1 = self.open_job(app1)
+        s1.pin_eye(2, "mattrai", {i: T.pins_at(2)[i] for i in EYES["mattrai"].pins}, kind="shape")
+        self.assertTrue(s1.unsent)
+        app1.save_work()
+        with open(app1.state_path(), encoding="utf-8") as fh:
+            saved = json.load(fh)
+        self.assertNotIn("adopted", saved)
+        self.shape_only(job)
+        return job, app1.state_path()
+
+    def test_plain_shape_session_with_unsent_work_is_offered(self):
+        self.plain_shape_file()
+        app = self.make_app()
+        s = self.open_job(app)
+        self.assertTrue(s.adopted)
+        self.assertEqual(app.adopt_asked, ["Khôi phục sẽ thay 2 shape vừa nạp từ CVAT bằng bản đã lưu (1 shape, có sửa chưa gửi)."])
+        self.assertEqual([(sh.label, sh.key.frame) for sh in s.build_shapes()], [("mattrai", 2)])
+        self.assertTrue(s.unsent)
+        self.assertIn("Đã khôi phục phiên làm việc: 1 shape.", app.notice)
+        self.assertNotIn(OLD_FILE, app.notice)
+        self.assertNotIn("Đã nạp", app.notice)
+
+    def test_plain_shape_session_offer_warns_when_changed_on_server(self):
+        job, _ = self.plain_shape_file()
+        job.version += 1
+        app = self.make_app()
+        self.open_job(app)
+        self.assertTrue(app.adopt_asked[0].endswith(CHANGED), app.adopt_asked[0])
+        self.assertTrue(app.notice.endswith(CHANGED_NOTICE), app.notice)
+
+    def test_plain_shape_session_file_without_unsent_work_is_silent(self):
+        _, path = self.plain_shape_file()
+        with open(path, encoding="utf-8") as fh:
+            saved = json.load(fh)
+        saved["unsent"] = False
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(saved, fh)
+        app = self.make_app()
+        s = self.open_job(app)
+        self.assertEqual(app.adopt_asked, [])
+        self.assertNotIn(OLD_FILE, app.notice)
+        self.assertNotIn("Đã khôi phục", app.notice)
         self.assertEqual(len(s.build_shapes()), 2)
 
     def test_restore_file_with_unsent_not_true_is_silent(self):

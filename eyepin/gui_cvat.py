@@ -243,7 +243,7 @@ class CvatMixin:
 
     def ask_restore_adopted(self, text: str) -> bool:
         """Hỏi có khôi phục phiên đã lưu thay cho shape vừa nạp từ CVAT không (phiên đã nạp, file phiên còn công chưa gửi)."""
-        return messagebox.askyesno("Khôi phục phiên", f"{text}\n\nKhôi phục không?", icon="warning", parent=self.root)
+        return messagebox.askyesno("Khôi phục phiên", f"{text}\n\nKhôi phục không?", icon="warning", default="no", parent=self.root)
 
     def new_client(self, url: str) -> CvatClient:
         return CvatClient(url)
