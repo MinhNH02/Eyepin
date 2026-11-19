@@ -249,6 +249,10 @@ class CvatClient:
         """Mọi issue của một task, dict nguyên dạng CVAT trả, đúng thứ tự CVAT trả (`id` giảm dần)."""
         return self._all("/api/issues", {"task_id": task_id}, "issue")
 
+    def job_issues(self, job_id: int) -> list[dict]:
+        """Mọi issue của MỘT job (`GET /api/issues?job_id=`), dict nguyên dạng CVAT trả, đúng thứ tự CVAT trả (`id` giảm dần)."""
+        return self._all("/api/issues", {"job_id": job_id}, "issue")
+
     def comments(self, job_id: int) -> list[dict]:
         """Mọi bình luận của một job, dict nguyên dạng CVAT trả (`id` giảm dần). Chỉ lọc theo job: `task_id` bị CVAT bỏ qua và trả mọi bình luận."""
         return self._all("/api/comments", {"job_id": job_id}, "bình luận")

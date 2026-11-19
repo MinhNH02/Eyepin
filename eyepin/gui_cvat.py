@@ -18,7 +18,7 @@ from tkinter import filedialog, messagebox, ttk
 import cv2
 import numpy as np
 
-from . import cvatsync, qc
+from . import cvatsync, gaps, qc
 from .cvatapi import CvatClient, CvatError, LoginNeeded
 from .cvatsource import open_job
 from .geometry import EYES
@@ -30,6 +30,12 @@ TITLE = "EyePin — gán nhãn mắt cho CVAT"
 RESTORE_LIMIT = ("Giới hạn của việc khôi phục: bản chụp là bản xuất nền (các nhãn khác mắt) trước khi gửi. Nhãn mắt cũ chỉ được trả lại đúng loại khi "
                  "định dạng nền cũng là định dạng hiện nhãn mắt cũ; ví dụ nền \"CVAT for images\" trả track mắt cũ về thành shape ở mọi frame. "
                  "Nhãn mắt cũ đã được bạn đồng ý xoá lúc gửi; khôi phục chủ yếu để lấy lại nhãn nền.")
+RESTORE_LIMIT_ADOPTED = "Khôi phục đưa job về đúng nhãn trên CVAT ngay trước lần gửi này (shape mắt và nhãn khác)."     # phiên đã nạp shape: bản chụp dựng từ JSON
+
+
+def restore_limit(session) -> str:
+    """Câu giới hạn của việc khôi phục theo phiên: phiên đã nạp shape của job (`Session.adopted`) khôi phục được trọn nhãn mắt."""
+    return RESTORE_LIMIT_ADOPTED if getattr(session, "adopted", False) else RESTORE_LIMIT
 
 
 def edit_command(fn):
@@ -81,7 +87,8 @@ class CvatMixin:
         self._menu = None
 
     def _cvat_menu_items(self, menu):
-        """Bốn mục menu: Mở từ CVAT…, Gửi lên CVAT, Xoá nhãn mắt cũ và gán lại… (hai mục này bật/tắt theo trạng thái phiên), Báo cáo issue CVAT…."""
+        """Năm mục menu: Mở từ CVAT…, Gửi lên CVAT, Xoá nhãn mắt cũ và gán lại… (hai mục này bật/tắt theo trạng thái phiên), Báo cáo issue CVAT…,
+        Tải lại issue CVAT."""
         self._menu = menu
         menu.add_command(label="Mở từ CVAT…", command=self.open_cvat)
         menu.add_command(label="Gửi lên CVAT", command=self.send_cvat)
@@ -89,6 +96,7 @@ class CvatMixin:
         menu.add_command(label="Xoá nhãn mắt cũ và gán lại…", command=self.qc_clear)
         self._cvat_menu["clear"] = menu.index("end")
         menu.add_command(label="Báo cáo issue CVAT…", command=self.show_issue_report)      # sau hai mục trên để chỉ số của chúng không đổi
+        menu.add_command(label="Tải lại issue CVAT", command=self.load_job_issues)           # issue của job đang mở, nhóm cuối của tab Issues
         menu.add_separator()
         menu.add_command(label="Đăng xuất…", command=self.logout)          # LoginMixin (gui_login.py): dọn rồi về màn đăng nhập
         menu.add_command(label="Thoát EyePin", command=lambda: self.on_close())   # như nút X: hỏi lưu/bận rồi đóng, không xoá gì
@@ -240,6 +248,10 @@ class CvatMixin:
 
     def ask_restore_job(self, text: str) -> bool:
         return messagebox.askyesno("Khôi phục job", text, icon="warning", default="no", parent=self.root)
+
+    def ask_restore_adopted(self, text: str) -> bool:
+        """Hỏi có khôi phục phiên đã lưu thay cho shape vừa nạp từ CVAT không (phiên đã nạp, file phiên còn công chưa gửi)."""
+        return messagebox.askyesno("Khôi phục phiên", f"{text}\n\nKhôi phục không?", icon="warning", default="no", parent=self.root)
 
     def new_client(self, url: str) -> CvatClient:
         return CvatClient(url)
@@ -538,16 +550,30 @@ class CvatMixin:
         self.side.select(self.issues_tab)
 
     def _open_extras(self):
-        """Gọi khi một phiên vừa được mở xong: job đã có nhãn mắt thì vào chế độ QC (tự quét, mở tab Issues)."""
-        if self.s is not None and self.s.qc:
+        """Gọi khi một phiên vừa được mở xong. Job đã có nhãn mắt mà không nạp được thì vào chế độ QC (tự quét, mở tab Issues, nêu lý do không nạp
+        được); phiên đã nạp shape mắt thì báo số shape đã nạp, trừ khi vừa khôi phục từ file phiên (`try_restore` đã báo). Thông báo nối sau
+        thông báo đang có (`try_restore` chạy trước). Mọi phiên job CVAT (đã nạp, QC hay gán từ đầu) còn tự tải issue của job (`load_job_issues`, luồng nền);
+        phiên khác thì nhóm issue CVAT của phiên trước bị bỏ."""
+        s = self.s
+        self.load_job_issues()                          # trước `_enter_qc_view`: bảng Issues không hiện nhóm của job trước
+        intro = ""
+        if s is not None and s.qc:
             self._enter_qc_view()
-            if qc.eye_labels(self.s.ann).empty():            # QC chỉ do JSON: bản xuất không còn thấy mắt nào để xem hay quét
+            if qc.eye_labels(s.ann).empty():                 # QC chỉ do JSON: bản xuất không còn thấy mắt nào để xem hay quét
                 intro = ("Chế độ QC: job có nhãn mắt rỗng hoặc toàn Outside trên CVAT, bản xuất không hiện nhãn nào để xem. "
                          "Muốn gán lại thì bấm \"Xoá nhãn mắt cũ và gán lại\" (lúc gửi, nhãn mắt cũ trên CVAT bị thay). Gửi lên CVAT đang tắt.")
             else:
-                n = len(self.s.findings)
+                n = len(s.findings)
                 intro = (f"Chế độ QC: job đã có nhãn mắt, quét thấy {n} vấn đề. Chỉ xem; muốn gán lại thì bấm \"Xoá nhãn mắt cũ và gán lại\". "
                          "Gửi lên CVAT đang tắt.")
+            if s.qc_reasons:
+                intro += " Lý do: " + " ".join(s.qc_reasons)
+        elif s is not None and s.adopted and not self._just_restored:
+            shapes = s.build_shapes()
+            per_eye = ", ".join(f"{label} {sum(1 for sh in shapes if sh.label == label)}" for label in EYES)
+            missing = len([g for g in gaps.find_gaps(s) if g.first >= 0])      # số đoạn thiếu nhãn; mắt chưa có nhãn nào không tính là đoạn
+            intro = f"Đã nạp {len(shapes)} shape mắt của job để sửa ({per_eye}); thiếu nhãn ở {missing} đoạn."
+        if intro:
             self.notice = f"{self.notice} {intro}" if self.notice else intro
 
     def qc_clear(self):
@@ -676,7 +702,7 @@ class CvatMixin:
             lb.pack(side="left", fill="both", expand=True)
             sb.pack(side="right", fill="y")
         if res.snapshot is not None:                          # chưa gửi gì thì job chưa bị EyePin đụng tới: không có gì để khôi phục
-            ttk.Label(d, text=RESTORE_LIMIT, wraplength=640, justify="left", style="Muted.TLabel").pack(anchor="w", padx=12, pady=8)
+            ttk.Label(d, text=restore_limit(session), wraplength=640, justify="left", style="Muted.TLabel").pack(anchor="w", padx=12, pady=8)
         bar = ttk.Frame(d)
         bar.pack(fill="x", padx=12, pady=(8, 12))
         if res.snapshot is not None:
@@ -695,7 +721,7 @@ class CvatMixin:
         client = getattr(source, "client", None) or self.cvat_client
         if s is None or client is None or snapshot is None:
             return
-        if not self.ask_restore_job(f"Khôi phục sẽ thay toàn bộ nhãn của job #{job_id} trên CVAT bằng bản chụp trước khi gửi.\n\n{RESTORE_LIMIT}\n\nTiếp tục?"):
+        if not self.ask_restore_job(f"Khôi phục sẽ thay toàn bộ nhãn của job #{job_id} trên CVAT bằng bản chụp trước khi gửi.\n\n{restore_limit(s)}\n\nTiếp tục?"):
             return
         current = self.s is s and (s.cvat or {}).get("job") == job_id     # trong lúc việc nền chạy không mở được phiên khác (busy)
 

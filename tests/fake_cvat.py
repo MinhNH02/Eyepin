@@ -43,6 +43,9 @@ Công tắc (thuộc tính, đổi được giữa chừng):
     reject_login_with_auth  True: đăng nhập có kèm header Authorization (khoá cũ) bị trả 401
     redirect_job        True: GET /api/jobs/{id} trả 302 sang http://example.com/ (kiểm client không đi theo)
     lose_non_eye_on_import  True: import xong thì JSON annotations của job mất một đối tượng không phải mắt (shape trước, rồi track)
+    on_import           None hoặc hàm(job: FakeJob, xml: bytes): gọi một lần khi mỗi lần import xong (trong xử lý trạng thái RQ, sau khi
+                        đặt job.xml, tăng job.version; trước lose_non_eye_on_import). `xml` là file đã nạp (sau shift_on_import). Server giả không
+                        tự cập nhật JSON annotations sau import; test dùng móc này đặt `job.annotations_json` như CVAT thật sẽ lưu.
     password            mật khẩu đúng (mặc định "pw"; sai -> 400); key trả về là `token` (mặc định "k1")
     username            tên trả về ở GET /api/users/self (mặc định "minh"; "" = server trả dữ liệu thiếu tên)
 Xác thực như CVAT thật (cvat/settings/base.py, DEFAULT_AUTHENTICATION_CLASSES: Token rồi Session): đăng nhập đúng trả `key` VÀ đặt cookie
@@ -133,6 +136,7 @@ class FakeCvat:
         self.reject_login_with_auth = False
         self.redirect_job = False
         self.lose_non_eye_on_import = False
+        self.on_import = None
         self.shift_on_import = 0.0
         self.polls_before_finish = 1
         self.page_size = 100
@@ -408,6 +412,8 @@ class FakeCvat:
                                  xml, count=1)
                 j.xml = xml
                 j.version += 1
+                if self.on_import is not None:
+                    self.on_import(j, xml)
                 if self.lose_non_eye_on_import:
                     self._lose_one_non_eye(j)
         return self._send(h, 200, {"status": "finished", "message": ""})

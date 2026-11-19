@@ -127,6 +127,25 @@ def _comments_by_issue(issues: list[dict], comments: list[dict]) -> dict[int, li
     return grouped
 
 
+def _row(issue: dict, mine: list[dict], link: str, assignee: str, tz: tzinfo | None) -> Row:
+    """Một dòng từ issue CVAT và các bình luận của nó (đã xếp theo `id`): bình luận đầu là mô tả, các bình luận sau là trả lời."""
+    message = _text(mine[0]) if mine else ""
+    return Row(
+        issue_id=issue["id"], job=issue["job"], frame=issue["frame"], link=link,
+        message=message if message.strip() else NO_MESSAGE, resolved=bool(issue.get("resolved")),   # lời thật giữ nguyên, rỗng hay chỉ có khoảng trắng thì ghi rõ
+        owner=username(issue.get("owner")) or UNKNOWN_USER, created=local_time(issue.get("created_date"), tz),
+        assignee=assignee, replies="\n".join(_reply(c, tz) for c in mine[1:]))
+
+
+def job_rows(url: str, task_id: int, issues: list[dict], comments: list[dict], *, tz: tzinfo | None = None) -> list[Row]:
+    """Các dòng của MỘT job: `issues` là issue lấy theo job (`CvatClient.job_issues`), `comments` là bình luận của job đó. Dòng xếp theo (frame, mã issue);
+    `assignee` để trống (người được giao không có trong issue). Bình luận lệch số đếm của issue thì ném `CvatError` như `build`."""
+    by_issue = _comments_by_issue(issues, comments)
+    rows = [_row(i, by_issue[i["id"]], frame_link(url, task_id, i["job"], i["frame"]), "", tz) for i in issues]
+    rows.sort(key=lambda r: (r.frame, r.issue_id))
+    return rows
+
+
 def build(url: str, user: str, task: dict, jobs: list[dict], issues: list[dict], comments: list[dict], *,
           now: datetime | None = None, tz: tzinfo | None = None) -> Report:
     """Dựng báo cáo từ dữ liệu đã lấy. `task` là một `cvatapi.task_row`, `jobs` là các `cvatapi.job_row`; `issues`, `comments` là dict nguyên dạng CVAT.
@@ -135,14 +154,8 @@ def build(url: str, user: str, task: dict, jobs: list[dict], issues: list[dict],
     by_issue = _comments_by_issue(issues, comments)
     rows = []
     for i in issues:
-        mine = by_issue[i["id"]]
         job = listed.get(i["job"])
-        message = _text(mine[0]) if mine else ""
-        rows.append(Row(
-            issue_id=i["id"], job=i["job"], frame=i["frame"], link=frame_link(url, task["id"], i["job"], i["frame"]),
-            message=message if message.strip() else NO_MESSAGE, resolved=bool(i.get("resolved")),   # lời thật giữ nguyên, rỗng hay chỉ có khoảng trắng thì ghi rõ
-            owner=username(i.get("owner")) or UNKNOWN_USER, created=local_time(i.get("created_date"), tz),
-            assignee=(job.get("assignee") or "") if job else "", replies="\n".join(_reply(c, tz) for c in mine[1:])))
+        rows.append(_row(i, by_issue[i["id"]], frame_link(url, task["id"], i["job"], i["frame"]), (job.get("assignee") or "") if job else "", tz))
     rows.sort(key=lambda r: (r.job, r.frame, r.issue_id))
 
     infos = {j["id"]: JobInfo(j["id"], j.get("type") or DEFAULT_JOB_TYPE, j.get("assignee") or "",

@@ -31,12 +31,13 @@ from PIL import Image, ImageTk
 from .geometry import EYES, MATTRAI, assign_roles, assign_three, derive, four_in_box
 from .render import (PIN_IDS, Look, RESIZE_HIT, ROTATE_DIST, ROTATE_HIT, draw_overlay, make_view, max_shift, render_base, render_main,
                      render_thumb, render_timeline, resize_handles, status_text)
-from . import imagefx
+from . import adopt, imagefx
 from . import shortcuts as sc
 from . import cvatlogin, theme
 from .cvatapi import CvatError
 from .gui_cvat import CvatMixin, edit_command, net_safe
 from .gui_frames import FramesMixin
+from .gui_jobissues import JobIssuesMixin
 from .gui_login import FrontDoor, LoginMixin
 from .gui_objects import LayerSet, ObjectSet, ObjectsMixin
 from .gui_report import ReportMixin
@@ -59,6 +60,19 @@ def to_photo(bgr):
 
 def _hex(bgr) -> str:
     return "#%02x%02x%02x" % (int(bgr[2]), int(bgr[1]), int(bgr[0]))
+
+
+def _saved_track_pins(data: dict) -> bool:
+    """File phiên có mắt kiểu track đã ghim ở bộ đối tượng nào đó (mắt không ghi `kind`, như file bản 1, 2, tính là track). File như vậy
+    không phải của một phiên toàn shape, nên không khôi phục lên phiên đã nạp shape từ CVAT được."""
+    parts = data.get("layers") if data.get("version", 1) >= 2 else [data]
+    for p in parts or []:
+        kinds = p.get("kind") or {}
+        for label, spec in EYES.items():
+            ids = {str(i) for i in spec.ids}
+            if kinds.get(label) != "shape" and any(ids & set(pts) for pts in (p.get("pins") or {}).values()):
+                return True
+    return False
 
 
 def _unbind_one(w, tag: str, seq: str, funcid: str | None):
@@ -130,7 +144,7 @@ DRAG_MIN_PX = 3                                  # kéo điểm / cả mắt: ch
 MOUSE_SPEED_MIN, MOUSE_SPEED_MAX = 0.1, 3.0       # độ nhạy chuột khi kéo: 1 = như cũ, nhỏ hơn = chậm hơn
 
 
-class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
+class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin, JobIssuesMixin):
     @staticmethod
     def _set_window_icon(root: tk.Tk) -> None:
         """Icon cửa sổ và thanh tác vụ là ảnh eyepin.png. Thiếu file hoặc lỗi thì bỏ qua, tool vẫn mở bình thường."""
@@ -149,6 +163,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         self._bound_ids: list[tuple[str, str]] = []   # (sequence, tên lệnh Tcl) của mọi phím đã gắn: gỡ phải xoá cả lệnh, không thì lệnh giữ App sống
         self.clipboard: dict | None = None
         self._dialogs: dict[str, tk.Toplevel] = {}
+        self._occl_ui: dict = {}                      # biến của hộp "Occluded cho cả đoạn" (`show_occluded_range`); rỗng khi chưa mở hộp
         root.title("EyePin — gán nhãn mắt cho CVAT")
         self._set_window_icon(root)
         self.s: Session | None = None
@@ -166,6 +181,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         self.look = Look(eyes={l: True for l in EYES})
         self.notice = ""
         self._pending_notice = ""           # báo một lần ở lần vẽ đầu có phiên (mở thư mục, khôi phục phiên, --pins đều ghi đè `notice`)
+        self._just_restored = False         # `try_restore` đặt True khi vừa khôi phục phiên từ file (phiên đã nạp từ CVAT khi đó không báo "Đã nạp ...")
         self._apply_settings_to_look()
         self.hide_labels = False
         self.main_size = MAIN
@@ -189,7 +205,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         self._left_pan = False
         self.scratch = False                 # True khi mở bằng --pins: không khôi phục, không ghi file phiên (bản demo không đụng phiên đã lưu)
         self._scratch_pins: dict | None = None   # dữ liệu --pins đã nạp (để mở lại file nhãn cùng thư mục mà không mất ghim)
-        self._turns_sig: tuple = ()          # chữ ký các đoạn quay đầu đang hiện ở tab Issues
+        self._issues_sig: tuple = ()         # chữ ký những gì đang hiện ở tab Issues (xem `_issues_signature`): bảng chỉ dựng lại khi nó đổi
         self._turns_seen: set = set()        # đoạn quay đầu đã báo (người, frame đầu, frame cuối): chỉ báo lại khi có đoạn mới
         self._turn_target = None             # (người, frame) của đoạn quay đầu mới nhất, cho nút "Tới đoạn quay đầu"
         self._panel_key = None               # (phiên, frame, người, lựa chọn) lần cuối đồng bộ thẻ và nút ★ thanh trái (xem `_sync_panel`)
@@ -197,6 +213,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         self._auto_key = None
         self._init_cvat()
         self._init_report()
+        self._init_job_issues()
         self._build()
         self.sync_look_vars()
         self._bind_keys()
@@ -227,6 +244,9 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         menu.add_separator()
         menu.add_command(label=f"Chạy hành động ({self.kl('run_actions')})…", command=self.show_run_actions)
         menu.add_command(label=f"Quét nhãn có sẵn ({self.kl('scan')})", command=self.scan)
+        menu.add_command(label="Chép shape gần nhất vào frame này", command=self.copy_nearest_shape)
+        menu.add_command(label="Điền đoạn thiếu nhãn", command=self.fill_gap_here)
+        menu.add_command(label="Occluded cho cả đoạn…", command=self.show_occluded_range)
         menu.add_command(label="Xoá toàn bộ nhãn (Remove annotations)…", command=self.remove_annotations)
         menu.add_command(label=f"Xuất file import ({self.kl('export')})", command=self.export)
         menu.add_command(label="Hoàn tất job (Finish the job)…", command=self.finish_job)
@@ -391,7 +411,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
                                      bg=theme.WHITE, fg=theme.INK, relief="solid", bd=1, padx=6, pady=4)
         self.issue_detail.pack(fill="x", pady=(4, 0))
         self.issue_info = []
-        self.items: list[int] = []
+        self.issue_rows: list[tuple[str, object]] = []    # (loại, dữ liệu) của từng dòng bảng Issues: "turn", "finding", "gap", "auto", "cvat"
+        self.items: list[int | None] = []                 # frame của từng dòng (None: dòng không có frame để nhảy tới)
         self.status = tk.StringVar(value="Mở một thư mục ảnh để bắt đầu. Cuộn chuột để phóng to; kéo chuột để dời ảnh.")
         self.measure_var = tk.StringVar(value="")                  # toạ độ ảnh dưới con trỏ và khoảng cách tới điểm gần nhất
         status_row = ttk.Frame(self.root)
@@ -608,6 +629,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
             "marker_up": lambda: self.resize_markers(1.25), "marker_down": lambda: self.resize_markers(0.8), "swap_top": self.swap_top,
             "image_setups": self.show_image_setups, "grid": self.toggle_grid,
             "open_cvat": self.open_cvat, "send_cvat": self.send_cvat, "qc_clear": self.qc_clear, "issue_report": self.show_issue_report,
+            "copy_nearest_shape": self.copy_nearest_shape, "fill_gap": self.fill_gap_here, "occluded_range": self.show_occluded_range,
         }
 
     def _bind_keys(self):
@@ -716,6 +738,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         return messagebox.askyesno("EyePin", f"Có phiên làm việc đã lưu cho {what} này ({n} frame ghim). Khôi phục không?{extra}")
 
     def try_restore(self) -> bool:
+        self._just_restored = False
         p = self.state_path()
         if not os.path.exists(p):
             return False
@@ -723,6 +746,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         try:
             with open(p, encoding="utf-8") as fh:
                 data = json.load(fh)
+            if self.s.adopted:                           # job đã nạp shape từ CVAT: chỉ công chưa gửi mới đáng khôi phục, hỏi bằng câu riêng
+                return self._restore_adopted(data)
             n = sum(len(part.get("pins", {})) for part in data.get("layers", [data]))
             if n == 0 or not self.ask_restore(n):
                 return False
@@ -731,7 +756,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
                 self.s.clear_old_eyes()
                 cleared = True
             self.s.load_state(data)                      # lỗi CVAT khi bám lại (mất kết nối, 401): load_state trả phiên về như trước
-        except (OSError, ValueError, KeyError, TypeError, CvatError) as err:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, CvatError) as err:      # AttributeError: file phiên sai kiểu (`cvat`, bộ đối tượng không phải dict)
             if cleared:
                 self.s.restore_old_eyes()                # khôi phục lỗi: nhãn mắt cũ còn nguyên, vẫn ở chế độ QC
             self.notice = f"Không khôi phục được phiên đã lưu: {err}"
@@ -743,6 +768,32 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
             self.notice += " Nhãn mắt cũ của job đã được bỏ khỏi phiên (gửi lên CVAT sẽ thay chúng)."
         if self.s.cvat is not None and (self.s.cvat.get("updated") != live):
             self.notice += " Chú ý: job đã bị sửa trên CVAT kể từ lần làm việc trước; gửi lên sẽ ghi đè các sửa đó."
+        return True
+
+    def _restore_adopted(self, data: dict) -> bool:
+        """`try_restore` cho phiên đã nạp shape từ CVAT (`Session.adopted`). File phiên không ghi `"adopted"` mà có mắt track đã ghim (lưu lúc
+        job còn ở chế độ chỉ xem, hoặc phiên thường kiểu track) thì bỏ qua và báo; file không còn sửa chưa gửi thì bỏ qua im lặng (bản vừa nạp từ
+        CVAT đã mới hơn). File không ghi `"adopted"` mà toàn shape và còn sửa chưa gửi (phiên thường đã gửi shape rồi vẽ tiếp, mở lại thì job
+        thành job đã nạp) được hỏi như file của phiên đã nạp: bỏ qua thì lần tự lưu kế sẽ ghi đè công chưa gửi. Hỏi trước vì khôi phục thay
+        shape vừa nạp; lỗi khi nạp thì ném lên cho `try_restore` báo (phiên về như trước)."""
+        s = self.s
+        if data.get("adopted") is not True and _saved_track_pins(data):
+            self.notice = "Bỏ qua phiên lưu cũ (lưu khi job còn ở chế độ chỉ xem)."
+            return False
+        if data.get("unsent") is not True:
+            return False
+        saved = adopt.saved_shape_count(data)
+        text = f"Khôi phục sẽ thay {len(s.build_shapes())} shape vừa nạp từ CVAT bằng bản đã lưu ({saved} shape, có sửa chưa gửi)."
+        changed = (data.get("cvat") or {}).get("updated") != (s.cvat or {}).get("updated")
+        if changed:
+            text += "\nJob đã bị sửa trên CVAT sau lúc lưu; khôi phục rồi gửi sẽ đè các thay đổi đó."
+        if not self.ask_restore_adopted(text):
+            return False
+        s.load_state(data)
+        self.notice = f"Đã khôi phục phiên làm việc: {saved} shape."
+        if changed:
+            self.notice += " Chú ý: job đã bị sửa trên CVAT kể từ lần làm việc trước; gửi lên sẽ ghi đè các sửa đó."
+        self._just_restored = True
         return True
 
     def save_work(self, auto: bool = False) -> bool:
@@ -1356,9 +1407,16 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         self._cancel_drag()                              # lần kéo đang dở thuộc phiên cũ
         self.f, self.anchor, self.clicks, self.pinning, self.manual = 0, None, [], None, None
         self.draft, self.draft_drag, self._box0 = None, None, None
-        self.items = []
+        self.items, self.issue_rows = [], []
         self.hidden_objs.clear()                         # chỉ số người của phiên cũ không còn đúng
-        self._turns_sig = ()
+        box = self._dialogs.pop("occluded_range", None)  # hộp "Occluded cho cả đoạn" chọn người, mắt, frame của phiên cũ: đóng, không để áp nhầm sang phiên mới
+        if box is not None:
+            try:
+                box.destroy()
+            except tk.TclError:
+                pass
+        self._occl_ui = {}
+        self._issues_sig = ()
         self._turns_seen, self._turn_target = set(), None
         self.turn_bar.place_forget()
         self._auto_key = None
@@ -1598,7 +1656,10 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
 
     def draw_kind_choice(self, label: str) -> tuple[str, bool]:
         """(kiểu chọn sẵn, có khoá không) cho mắt `label` của người đang chọn trong bảng Vẽ mắt. Mắt đã có nhãn thì kiểu của nó và khoá
-        (một mắt chỉ có một kiểu, `Session.pin_eye` từ chối đổi); mắt chưa có nhãn thì kiểu của lần vẽ gần nhất (`draw_kind`) và không khoá."""
+        (một mắt chỉ có một kiểu, `Session.pin_eye` từ chối đổi); mắt chưa có nhãn thì kiểu của lần vẽ gần nhất (`draw_kind`) và không khoá.
+        Phiên đã nạp shape từ CVAT (`Session.adopted`) chỉ có shape: luôn ("shape", True)."""
+        if self.s and self.s.adopted:
+            return "shape", True
         if self.s and any(set(EYES[label].ids) & set(pts) for pts in self.s.pins.values()):
             return self.s.eye_kind(label), True
         return self.draw_kind, False
@@ -1609,7 +1670,13 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         self._draw_kind_var.set(kind)
         for k, radio in self._draw_radios.items():
             radio.state(["disabled"] if locked and k != kind else ["!disabled"])
-        self._draw_kind_note.set(f"Mắt này đang là {kind}. Muốn vẽ kiểu khác: xoá nhãn của nó hoặc thêm người mới (+)." if locked else "")
+        if not locked:
+            note = ""
+        elif self.s is not None and self.s.adopted:
+            note = "Job đã nạp từ CVAT chỉ có shape mắt."
+        else:
+            note = f"Mắt này đang là {kind}. Muốn vẽ kiểu khác: xoá nhãn của nó hoặc thêm người mới (+)."
+        self._draw_kind_note.set(note)
 
     @edit_command
     def begin_draw(self, label: str, method: str = "points", kind: str | None = None):
@@ -2341,8 +2408,16 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
 
     def on_list(self, _):
         i = self._issue_selected()
-        if i is not None and i < len(self.items):
+        if i is None or i >= len(self.items):
+            return
+        if self.items[i] is not None:
             self.go(self.items[i])
+        elif i < len(self.issue_rows) and self.issue_rows[i][0] == "cvat":      # issue CVAT (hoặc dòng lỗi tải) không có frame để nhảy tới: nói lý do
+            self.notice = self.job_issue_unjumpable_notice()
+            self.refresh(light=True)
+        elif i < len(self.issue_rows) and self.issue_rows[i][0] == "gap" and self.issue_rows[i][1].first < 0:     # mắt chưa có shape nào: không có frame để nhảy tới
+            self.notice = "Mắt này chưa có nhãn nào: vẽ một shape của nó (phím N) rồi mới điền được."
+            self.refresh(light=True)
 
     def on_timeline(self, e):
         if self.s:
@@ -2694,8 +2769,8 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         if pts:
             xs, ys = [p[0] for p in pts.values()], [p[1] for p in pts.values()]
             self.anchor = (min(xs), min(ys), max(xs), max(ys))
-        if not light and self._turns_signature() != self._turns_sig:
-            self._fill_issues()                       # đoạn quay đầu đổi sau khi ghim/sửa: cập nhật tab Issues (không dựng lại khi không đổi)
+        if not light and self._issues_signature() != self._issues_sig:
+            self._fill_issues()                       # quay đầu, thiếu nhãn, shape chưa xem hay issue CVAT đổi: cập nhật tab Issues (không đổi thì không dựng lại, giữ dòng đang chọn)
             self._announce_turns()
         override = ({self.drag[0]: self.drag[1]} if self.drag else self._eye_shift() if self.drag_eye
                     else self._resize_override() if self.drag_resize else self._rot_override())

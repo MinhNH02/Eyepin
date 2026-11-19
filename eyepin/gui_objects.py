@@ -8,13 +8,29 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
+from typing import NamedTuple
 
-from . import theme
+from . import gaps, theme
+from .cvatapi import CvatError
 from .geometry import EYES
 from .gui_cvat import edit_command
 from .icons import IconButton
 from .render import INSTANCE_COLORS
 from .scan import HINT, SHORT
+from .session import QC_MSG, SHAPE_ONLY_MSG
+
+
+class IssueEntry(NamedTuple):
+    """Một dòng của tab Issues: `kind` ("turn" | "finding" | "gap" | "auto" | "cvat") và `payload` (dữ liệu của dòng, xem `ObjectsMixin._issue_entries`),
+    khoảng frame (`first` None: dòng không có frame để nhảy tới), chữ ngắn, mức ("red" | "yellow" | "green") và chi tiết."""
+    kind: str
+    payload: object
+    first: int | None
+    last: int | None
+    short: str
+    level: str
+    detail: str
+
 
 def _pair_key(i: int, x):
     return (i, x)
@@ -197,6 +213,7 @@ class ObjectsMixin:
         m.add_command(label="Đổi label: hoán đổi mattrai và matphai", command=self.swap_labels)
         m.add_command(label=f"Đổi màu ({self.kl('change_color')})", command=self.object_color_next)
         m.add_command(label="Phóng vào đối tượng (Focus)", command=self.focus_object)
+        m.add_command(label="Occluded cho cả đoạn…", command=self.show_occluded_range)
         m.add_separator()
         m.add_command(label=f"Xoá mắt (Remove, {self.kl('delete')})", command=self.delete_label)
         m.add_command(label="Kết thúc nhãn từ frame này (Outside)", command=self.end_label_here)
@@ -606,6 +623,29 @@ class ObjectsMixin:
         rows = tuple(self._turn_rows())
         return (len(self.s.layers), rows) if rows else ()
 
+    def _auto_runs(self) -> list[tuple[int, str, int, int]]:
+        """Các đoạn shape điền tự động mà người dùng chưa xem, của mọi người: (chỉ số người, nhãn, frame đầu, frame cuối); mỗi đoạn là các frame
+        liền nhau. Frame đã xoá không tính (không còn gì để xem), nên một frame đã xoá giữa chừng cắt đôi đoạn. Xếp theo (frame đầu, người, nhãn)."""
+        s = self.s
+        out: list[tuple[int, str, int, int]] = []
+        for i in range(len(s.layers) if s else 0):
+            with s.layer_ctx(i):
+                for label in EYES:
+                    for f in (f for f in s.unreviewed(label) if f not in s.deleted):
+                        if out and out[-1][:2] == (i, label) and out[-1][3] == f - 1:
+                            out[-1] = (i, label, out[-1][2], f)
+                        else:
+                            out.append((i, label, f, f))
+        return sorted(out, key=lambda r: (r[2], r[0], r[1]))
+
+    def _issues_signature(self) -> tuple:
+        """Mọi thứ làm bảng Issues đổi mà không đi qua `_fill_issues`: đoạn quay đầu, đoạn thiếu nhãn, đoạn shape chưa xem của mọi người, và số
+        thứ tự lần tải issue CVAT (`JobIssuesMixin._job_issues_seq`; không có mixin đó thì 0). Vẽ lại chỉ dựng lại bảng khi chữ ký này đổi, để không mất
+        dòng đang chọn."""
+        if not self.s:
+            return ()
+        return (self._turns_signature(), tuple(gaps.find_gaps(self.s)), tuple(self._auto_runs()), getattr(self, "_job_issues_seq", 0))
+
     def _turn_text(self, i: int, k: int, t) -> str:
         return (f"Người {i + 1}: " if len(self.s.layers) > 1 else "") + t.message(k)
 
@@ -681,27 +721,67 @@ class ObjectsMixin:
             lines.append("Cách xử lý: " + HINT[fd.code])
         return short, fd.level, "\n".join(lines)
 
+    def _gap_entry(self, g: gaps.Gap, many: bool) -> IssueEntry:
+        """Dòng "Thiếu nhãn" của một đoạn (mức vàng); mắt chưa có nhãn nào (`first` < 0) không có frame để nhảy tới."""
+        who = f"Người {g.layer + 1}: " if many else ""
+        if g.first < 0:
+            lines = [who + f"Mắt {g.label} chưa có shape nào ở frame nào, trong khi mắt kia đã có.",
+                     "Cách xử lý: vẽ một shape của mắt này (phím N), rồi dùng \"Điền đoạn thiếu nhãn\" hoặc \"Chép shape gần nhất vào frame này\" ở menu."]
+            return IssueEntry("gap", g, None, None, gaps.gap_text(g, many), "yellow", "\n".join(lines))
+        lines = [who + f"Frame {self._span(g.first, g.last)} ({g.count} frame) · mắt {g.label}",
+                 "Vấn đề: đoạn này chưa có shape của mắt này (frame đã xoá không tính).",
+                 "Cách xử lý: đứng trong đoạn rồi chọn \"Điền đoạn thiếu nhãn\" (bám tiến từ shape ngay trước đoạn) hoặc \"Chép shape gần nhất vào frame này\" "
+                 "ở menu; hoặc vẽ tay (phím N)."]
+        return IssueEntry("gap", g, g.first, g.last, gaps.gap_text(g, many), "yellow", "\n".join(lines))
+
+    def _auto_entry(self, run: tuple[int, str, int, int], many: bool) -> IssueEntry:
+        """Dòng "Điền tự động, chưa xem" của một đoạn shape do tool điền (mức vàng)."""
+        layer, label, a, b = run
+        n = b - a + 1
+        short = (f"người {layer + 1} · " if many else "") + f"Điền tự động, chưa xem {label} · frame {self._span(a, b)} ({n} frame)"
+        lines = [(f"Người {layer + 1}: " if many else "") + f"Frame {self._span(a, b)} ({n} frame) · mắt {label}",
+                 "Vấn đề: shape do tool điền bằng bám tiến, chưa ai xem lại.",
+                 "Cách xử lý: xem từng frame và sửa điểm nếu lệch (sửa một shape thì nó tự ra khỏi danh sách); xem xong thì bấm Đã xử lý để đánh dấu cả đoạn là đã xem."]
+        return IssueEntry("auto", run, a, b, short, "yellow", "\n".join(lines))
+
+    def _issue_entries(self) -> list[IssueEntry]:
+        """Mọi dòng của tab Issues, tính lại từ trạng thái hiện tại của phiên, theo thứ tự nhóm: đoạn quay đầu (do tool tính từ điểm ghim), vấn đề do
+        Quét tìm trong file nhãn, thiếu nhãn, shape điền tự động chưa xem, rồi issue CVAT của job (`cvat_issue_entries`; chưa có thì không có nhóm này).
+        `payload`: turn = (người, số thứ tự, đoạn); finding = Finding; gap = Gap; auto = (người, nhãn, frame đầu, frame cuối);
+        cvat = (frame hoặc None, chữ ngắn, mức, chi tiết)."""
+        s = self.s
+        if not s:
+            return []
+        many = len(s.layers) > 1
+        out = [IssueEntry("turn", (i, k, t), t.first, t.last, *self._turn_entry(i, k, t)) for i, k, t in self._turn_rows()]
+        out += [IssueEntry("finding", fd, fd.frame, fd.last, *self._finding_entry(fd)) for fd in s.findings]
+        out += [self._gap_entry(g, many) for g in gaps.find_gaps(s)]
+        out += [self._auto_entry(run, many) for run in self._auto_runs()]
+        cvat = getattr(self, "cvat_issue_entries", None)
+        for frame, short, level, detail in (cvat() if cvat else []):
+            out.append(IssueEntry("cvat", (frame, short, level, detail), frame, frame, short, level, detail))
+        return out
+
     def _fill_issues(self):
-        """Danh sách vấn đề: đoạn quay đầu (do tool tính từ điểm ghim) đứng trước, rồi các vấn đề do Quét tìm trong file nhãn.
-        Mỗi dòng có cột riêng: chấm màu, #, Frame, mô tả ngắn, Mức; bấm vào dòng thì khung dưới hiện chi tiết."""
-        found = self.s.findings if self.s else []
-        rows = self._turn_rows()
-        self.items = [t.first for _, _, t in rows] + [fd.frame for fd in found]
+        """Danh sách vấn đề (thứ tự nhóm: xem `_issue_entries`). Mỗi dòng có cột riêng: chấm màu, #, Frame, mô tả ngắn; bấm vào dòng thì khung dưới hiện
+        chi tiết. `issue_rows` giữ (loại, dữ liệu) của từng dòng, `items` giữ frame để nhảy tới (None: dòng không có frame)."""
+        entries = self._issue_entries()
+        self.issue_rows = [(e.kind, e.payload) for e in entries]
+        self.items = [e.first for e in entries]
         self.issue_info = []                                  # chi tiết của từng dòng, hiện khi chọn dòng
         tab = self.issue_table
         tab.delete(*tab.get_children())
-        entries = [(t.first, t.last, *self._turn_entry(i, k, t)) for i, k, t in rows]
-        entries += [(fd.frame, fd.last, *self._finding_entry(fd)) for fd in found]
-        for n, (first, last, short, level, detail) in enumerate(entries, 1):
-            name = self.ISSUE_LEVELS[level][0]
-            tab.insert("", "end", iid=str(n - 1), image=self._issue_dots[level], values=(f"#{n}", self._span(first, last), short))
-            self.issue_info.append(f"#{n} · Mức: {name}\n{detail}")
+        for n, e in enumerate(entries, 1):
+            name = self.ISSUE_LEVELS[e.level][0]
+            span = "" if e.first is None else self._span(e.first, e.last)
+            tab.insert("", "end", iid=str(n - 1), image=self._issue_dots[e.level], values=(f"#{n}", span, e.short))
+            self.issue_info.append(f"#{n} · Mức: {name}\n{e.detail}")
         if not entries:
             tab.insert("", "end", iid="empty", values=("", "", self.ISSUE_EMPTY))
             self.issue_info.append("")
         self.issue_detail.config(text="Bấm một dòng để xem chi tiết; bấm đúp để nhảy tới frame.")
         self.issues_var.set(f"Items: {len(entries)}")
-        self._turns_sig = self._turns_signature()
+        self._issues_sig = self._issues_signature()
 
     def on_issue_select(self, _):
         """Bấm một dòng trong Issues: hiện chi tiết ở bảng bên dưới danh sách (không nhảy frame; đúp mới nhảy)."""
@@ -710,18 +790,17 @@ class ObjectsMixin:
             self.issue_detail.config(text=self.issue_info[i])
 
     def issue_step(self, step: int):
-        """Nhảy tới vấn đề kế (step > 0) hoặc trước (step < 0) so với frame đang xem; tính cả đoạn quay đầu."""
-        found = [(fd.frame, f"Vấn đề: {fd.message}") for fd in (self.s.findings if self.s else [])]
-        found += [(t.first, self._turn_text(i, k, t)) for i, k, t in self._turn_rows()]
-        found.sort(key=lambda p: p[0])
-        cand = [p for p in found if (p[0] > self.f if step > 0 else p[0] < self.f)]
+        """Nhảy tới vấn đề kế (step > 0) hoặc trước (step < 0) so với frame đang xem; tính mọi dòng có frame (quay đầu, vấn đề của Quét, thiếu nhãn, shape
+        điền tự động chưa xem, issue CVAT). Dòng không có frame (mắt chưa có nhãn nào, issue ngoài job) bị bỏ qua."""
+        entries = sorted((e for e in self._issue_entries() if e.first is not None), key=lambda e: e.first)
+        cand = [e for e in entries if (e.first > self.f if step > 0 else e.first < self.f)]
         if not cand:
             self.notice = "Không còn vấn đề nào theo hướng này. Bấm Quét để tìm vấn đề."
             self.refresh()
             return
-        frame, text = cand[0] if step > 0 else cand[-1]
-        self.go(frame)
-        self.notice = text
+        e = cand[0] if step > 0 else cand[-1]
+        self.go(e.first)
+        self.notice = f"Vấn đề: {e.payload.message}" if e.kind == "finding" else self._turn_text(*e.payload) if e.kind == "turn" else e.short
         self.refresh(light=True)
 
     def issue_toggle_show(self):
@@ -730,17 +809,237 @@ class ObjectsMixin:
         self.refresh()
 
     def issue_resolve(self):
+        """Nút Đã xử lý: bỏ vấn đề của Quét khỏi danh sách; đánh dấu cả đoạn "Điền tự động, chưa xem" là đã xem. Các dòng khác (quay đầu, thiếu nhãn,
+        issue CVAT) không bỏ được bằng nút này: mỗi loại tự hết khi nguyên nhân hết."""
         sel = self._issue_selected()
-        n_turns = len(self._turn_rows())
-        if self.s and sel is not None and sel < n_turns:
-            self.notice = "Đoạn quay đầu không bỏ được: nó được tính lại từ điểm ghim."
-            self.refresh()
-            return
-        if not (self.s and sel is not None and sel - n_turns < len(self.s.findings)):
+        if not (self.s and sel is not None and sel < len(self.issue_rows)):
             self.notice = "Chọn một vấn đề trong danh sách trước."
             self.refresh()
             return
-        fd = self.s.findings.pop(sel - n_turns)
-        self._fill_issues()
-        self.notice = f"Đã xử lý: {fd.label} frame {fd.frame}."
+        kind, payload = self.issue_rows[sel]
+        if kind == "turn":
+            self.notice = "Đoạn quay đầu không bỏ được: nó được tính lại từ điểm ghim."
+        elif kind == "finding":
+            self.s.findings[:] = [fd for fd in self.s.findings if fd is not payload]
+            self._fill_issues()
+            self.notice = f"Đã xử lý: {payload.label} frame {payload.frame}."
+        elif kind == "auto":
+            layer, label, a, b = payload
+            if layer != self.s.cur and layer < len(self.s.layers):
+                self.s.select_layer(layer)                    # đánh dấu theo người của dòng, như `_selected` chọn người của thẻ
+            frames = [f for f in self.s.unreviewed(label) if a <= f <= b]
+            self.s.mark_reviewed(label, frames)
+            self._fill_issues()
+            self.notice = f"Đã đánh dấu đã xem {len(frames)} shape điền tự động."
+        else:
+            self.notice = "Dòng này không bỏ được bằng Đã xử lý."
+        self.refresh()
+
+    # ---------- lệnh tạo shape (menu trên; chỉ mắt kiểu shape) ----------
+    def _selected_gap(self) -> gaps.Gap | None:
+        """Đoạn của dòng "Thiếu nhãn" đang chọn trong tab Issues; None khi chưa chọn dòng nào hoặc dòng chọn thuộc loại khác."""
+        i = self._issue_selected()
+        if i is None or i >= len(self.issue_rows):
+            return None
+        kind, payload = self.issue_rows[i]
+        return payload if kind == "gap" else None
+
+    def _shape_command_ok(self) -> bool:
+        """Điều kiện chung của lệnh chép và điền: có phiên, frame đang xem chưa bị xoá, và người đang chọn có ít nhất một mắt kiểu shape. Không đủ thì
+        đặt thông báo và trả False."""
+        s = self.s
+        if not s:
+            return False
+        if self.f in s.deleted:
+            self.notice = "Frame này đã bị xoá."
+        elif not any(s.eye_kind(l) == "shape" for l in EYES):
+            self.notice = SHAPE_ONLY_MSG
+        else:
+            return True
+        self.refresh(light=True)
+        return False
+
+    def _missing_shape_eye(self) -> str | None:
+        """Mắt mà lệnh chép và điền tác động ở frame đang xem: trong các mắt kiểu shape của người đang chọn mà KHÔNG có shape ở frame này, lấy mắt đang
+        chọn trong panel nếu nó nằm trong số đó, không thì mắt duy nhất còn thiếu, không thì (cả hai cùng thiếu) mattrai. Thẻ của mắt shape chỉ hiện ở
+        frame có shape, nên ở frame thiếu thường không chọn được mắt đang thiếu. None khi không mắt nào thiếu."""
+        s = self.s
+        chosen = self._selected()[0]                              # trước: nó có thể đổi người đang chọn (thẻ của người khác), mắt thiếu tính cho người đó
+        missing = [l for l in EYES if s.eye_kind(l) == "shape" and not s.has_shape(l, self.f)]
+        if not missing:
+            return None
+        return chosen if chosen in missing else "mattrai" if "mattrai" in missing else missing[0]
+
+    @edit_command
+    def copy_nearest_shape(self):
+        """Menu "Chép shape gần nhất vào frame này": chép shape gần nhất của mắt đang thiếu (`_missing_shape_eye`) sang frame đang xem."""
+        if not self._shape_command_ok():
+            return
+        label = self._missing_shape_eye()
+        if label is None:
+            self.notice = "Frame này đã có shape của cả hai mắt."
+            self.refresh(light=True)
+            return
+        try:
+            src = self.s.copy_nearest_shape(label, self.f)
+        except ValueError as err:
+            if str(err) == QC_MSG:
+                raise
+            self.notice = str(err)
+            self.refresh(light=True)
+            return
+        self.notice = f"Đã chép shape {label} từ frame {src} sang frame {self.f}."
+        self.refresh()
+
+    @edit_command
+    def fill_gap_here(self):
+        """Menu "Điền đoạn thiếu nhãn": điền bằng bám tiến đoạn của dòng "Thiếu nhãn" đang chọn (dòng của người khác thì chọn người đó trước); không có
+        dòng đó thì đoạn thiếu chứa frame đang xem của mắt đang thiếu (`_missing_shape_eye`)."""
+        s = self.s
+        if not s:
+            return
+        gap = self._selected_gap()
+        if gap is not None and gap.layer != s.cur and gap.layer < len(s.layers):
+            s.select_layer(gap.layer)
+        if not self._shape_command_ok():
+            return
+        if gap is None:
+            label = self._missing_shape_eye()
+            gap = gaps.gap_at(s, label, self.f) if label else None
+            if gap is None:
+                self.notice = "Đứng trong một đoạn thiếu nhãn (hoặc chọn dòng Thiếu nhãn) rồi điền."
+                self.refresh(light=True)
+                return
+        elif gap.first < 0:
+            self.notice = f"{gap.label} chưa có nhãn nào: vẽ một shape của mắt đó trước rồi mới điền được."
+            self.refresh(light=True)
+            return
+        was_stale = s.stale
+        try:
+            res = s.fill_gap(gap.label, gap.first, gap.last)
+        except ValueError as err:
+            if str(err) == QC_MSG:
+                raise
+            self.notice = str(err)
+            self.refresh(light=True)
+            return
+        except CvatError as err:
+            if s.stale and not was_stale:
+                raise                                         # shape đã ghi, chỉ bước tính lại lỗi: `edit_command` báo như mọi lệnh sửa khác
+            self.notice = f"Không điền được: {err} Chưa tạo shape nào."
+            self.refresh(light=True)
+            return
+        n = len(res.created)
+        if res.stopped_at is None:
+            self.notice = f"Đã điền đủ {n} frame." if n else "Đoạn này không còn frame nào thiếu."
+        elif n:
+            self.notice = (f"Đã tạo {n} shape (frame {self._span(res.created[0], res.created[-1])}); "
+                           f"dừng ở frame {res.stopped_at} vì khớp kém ({res.score:.2f}).")
+        else:
+            self.notice = f"Không tạo được shape nào: khớp kém ở frame {res.stopped_at} ({res.score:.2f})."
+        self.refresh()
+
+    # ---------- Occluded cho cả đoạn (spec 6.5) ----------
+    OCCL_WHOLE = "Cả mắt"
+
+    def _has_shape_eye(self) -> bool:
+        """Job có mắt kiểu shape ở ít nhất một người."""
+        s = self.s
+        for i in range(len(s.layers)):
+            with s.layer_ctx(i):
+                if any(s.eye_kind(l) == "shape" for l in EYES):
+                    return True
+        return False
+
+    @edit_command
+    def show_occluded_range(self):
+        """Menu "Occluded cho cả đoạn…", menu ⋮ của thẻ và hành động `occluded_range`: hộp chọn người, mắt, điểm (cả mắt hoặc một điểm) và khoảng frame.
+        Mặc định: người và mắt đang chọn (không có thì mattrai), "Cả mắt", từ frame đang xem tới cuối đoạn shape liền nhau chứa nó.
+        Mở lại khi hộp đang mở thì dựng lại theo frame và mắt hiện tại. Job không có mắt shape thì không mở hộp."""
+        s = self.s
+        if not s:
+            return
+        if not self._has_shape_eye():
+            self.notice = SHAPE_ONLY_MSG
+            self.refresh(light=True)
+            return
+        label = self._selected()[0] or "mattrai"                  # `_selected` chọn luôn người của dòng đang chọn: đọc trước khi lấy `s.cur`
+        if s.eye_kind(label) != "shape":
+            label = next((l for l in EYES if s.eye_kind(l) == "shape"), label)
+        self.playing = False
+        d, _ = self._toplevel("occluded_range", "Occluded cho cả đoạn")
+        for w in d.winfo_children():
+            w.destroy()
+        d.transient(self.root)
+        people = [f"Người {i + 1}" for i in range(len(s.layers))]
+        ui = self._occl_ui = {"layer": tk.StringVar(value=people[s.cur]), "label": tk.StringVar(value=label),
+                              "point": tk.StringVar(value=self.OCCL_WHOLE), "first": tk.StringVar(), "last": tk.StringVar(),
+                              "status": tk.StringVar()}
+        pad = {"padx": (10, 6), "pady": 3}
+        for r, (text, key, values) in enumerate((("Người", "layer", people), ("Mắt", "label", list(EYES)))):
+            ttk.Label(d, text=text).grid(row=r, column=0, sticky="w", **pad)
+            box = ttk.Combobox(d, textvariable=ui[key], values=values, state="readonly", width=18)
+            box.grid(row=r, column=1, columnspan=2, sticky="we", padx=(0, 10), pady=3)
+            box.bind("<<ComboboxSelected>>", lambda e: self._occluded_range_changed())
+        ttk.Label(d, text="Điểm").grid(row=2, column=0, sticky="w", **pad)
+        points = ttk.Combobox(d, textvariable=ui["point"], state="readonly", width=18)
+        points.configure(postcommand=lambda: points.configure(values=[self.OCCL_WHOLE, *map(str, EYES[ui["label"].get()].ids)]))   # điểm của mắt đang chọn trong hộp
+        points.grid(row=2, column=1, columnspan=2, sticky="we", padx=(0, 10), pady=3)
+        for r, (text, key) in enumerate((("Từ frame", "first"), ("Tới frame", "last")), start=3):
+            ttk.Label(d, text=text).grid(row=r, column=0, sticky="w", **pad)
+            ttk.Entry(d, textvariable=ui[key], width=8).grid(row=r, column=1, sticky="w", pady=3)
+        ttk.Button(d, text="Đặt Occluded", command=lambda: self.occluded_range_apply(True)).grid(row=5, column=0, columnspan=2, sticky="we", padx=10, pady=(8, 4))
+        ttk.Button(d, text="Bỏ Occluded", command=lambda: self.occluded_range_apply(False)).grid(row=5, column=2, sticky="we", padx=(0, 10), pady=(8, 4))
+        ttk.Label(d, textvariable=ui["status"], wraplength=320, justify="left").grid(row=6, column=0, columnspan=3, sticky="w", padx=10, pady=(0, 8))
+        d.bind("<Escape>", lambda e: d.destroy())
+        d.geometry(f"+{self.root.winfo_rootx() + 70}+{self.root.winfo_rooty() + 140}")
+        self._occluded_range_changed()
+
+    def _occluded_range_changed(self):
+        """Đổi người hoặc mắt trong hộp Occluded: điểm về "Cả mắt", khoảng frame về mặc định của mắt đó (frame đang xem tới cuối đoạn shape chứa nó)."""
+        ui, s = self._occl_ui, self.s
+        if not ui or not s:
+            return
+        layer = int(ui["layer"].get().split()[-1]) - 1
+        if not 0 <= layer < len(s.layers):                        # người này không còn (như `occluded_range_apply`): báo ở hộp, không ném lỗi
+            ui["status"].set("Không có người này trong job đang mở.")
+            return
+        with s.layer_ctx(layer):
+            last = s.shape_run(ui["label"].get(), self.f)[1]
+        ui["point"].set(self.OCCL_WHOLE)
+        ui["first"].set(str(self.f))
+        ui["last"].set(str(last))
+        ui["status"].set("")
+
+    @edit_command
+    def occluded_range_apply(self, on: bool):
+        """Nút "Đặt Occluded" (`on`) và "Bỏ Occluded" của hộp: áp cho người, mắt, điểm và khoảng frame đang chọn trong hộp (`Session.set_occluded_range`).
+        Kết quả (hay lời lỗi, khi đó nhãn không đổi) ghi ở dòng trạng thái của hộp và ở thông báo."""
+        ui, s = self._occl_ui, self.s
+        if not ui or not s:
+            return
+        try:
+            first, last = int(ui["first"].get()), int(ui["last"].get())
+        except ValueError:
+            ui["status"].set("Từ frame và Tới frame phải là số nguyên.")
+            return
+        label, point = ui["label"].get(), ui["point"].get()
+        pids = None if point == self.OCCL_WHOLE else [int(point)]
+        layer = int(ui["layer"].get().split()[-1]) - 1
+        if not 0 <= layer < len(s.layers):                        # hộp mở từ phiên cũ: người này không còn
+            ui["status"].set("Không có người này trong job đang mở.")
+            return
+        try:
+            with s.layer_ctx(layer):                              # lỗi thì người đang chọn không đổi; chỉ chọn người đó khi đã ghi xong
+                n, skipped = s.set_occluded_range(label, pids, first, last, on)
+        except ValueError as err:
+            if str(err) == QC_MSG:
+                raise                                             # `edit_command` báo QC_MSG như mọi lệnh sửa khác
+            ui["status"].set(str(err))
+            return
+        s.select_layer(layer)
+        what = "cả mắt" if pids is None else f"điểm {pids[0]}"
+        tail = f"; bỏ qua {skipped} điểm đang Outside." if skipped else "."
+        self.notice = f"Đã {'đặt' if on else 'bỏ'} Occluded cho {what} ở {n} shape (frame {first}–{last}){tail}"
+        ui["status"].set(self.notice)
         self.refresh()
