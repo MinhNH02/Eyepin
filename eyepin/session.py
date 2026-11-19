@@ -13,8 +13,9 @@ import math
 import numbers
 import os
 import time
+from collections.abc import Iterable
 from contextlib import contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 
@@ -41,6 +42,9 @@ SHAPE_PIN_MSG = ("frame này có shape: bỏ cả frame ghim sẽ xoá luôn sha
                  "hoặc xoá shape (Del)")
 ADOPTED_TRACK_MSG = ("Job này đã nạp shape mắt từ CVAT nên chỉ vẽ được shape "
                      "(track mắt sẽ làm job thành chỉ xem ở lần mở sau).")
+SHAPE_ONLY_MSG = "Lệnh này chỉ dùng cho mắt kiểu shape"
+FILL_NO_SOURCE_MSG = "Không có shape ngay trước đoạn này: vẽ hoặc chép shape ở frame đầu đoạn rồi điền tiếp."
+RANGE_MSG = "Frame bắt đầu phải nhỏ hơn hoặc bằng frame kết thúc"
 KINDS = ("track", "shape")
 
 _EYE_UIDS = itertools.count(1)     # mã nội bộ của từng mắt (Layer.eye_uid): tăng mãi, không dùng lại, kể cả giữa các phiên
@@ -50,6 +54,14 @@ def empty_annotations() -> Annotations:
     root = ET.Element("annotations")
     ET.SubElement(root, "version").text = "1.1"
     return Annotations(ET.ElementTree(root), {}, {l: [] for l in EYES}, {l: {} for l in EYES}, 0)
+
+
+@dataclass
+class FillResult:
+    """Kết quả của `Session.fill_gap`."""
+    created: list[int]            # frame vừa có shape
+    stopped_at: int | None        # frame khớp kém đầu tiên (không tạo shape ở đó); None nếu điền đủ
+    score: float | None           # độ khớp ở `stopped_at`
 
 
 class Layer:
@@ -71,6 +83,9 @@ class Layer:
         self.kind: dict[str, str] = {l: "track" for l in EYES}
         self.shape_ids: dict[str, dict[int, int]] = {l: {} for l in EYES}   # nhãn mắt -> {frame: ID của shape ở frame đó}
         self.segments: dict = {}                                    # đoạn bám đã tính (bộ nhớ đệm)
+        # nhãn mắt -> {frame: dấu vân} của shape do `fill_gap` điền tự động (dấu vân = toạ độ 8 điểm và cờ theo id lúc điền). Shape còn đó với dấu vân
+        # trùng là "điền tự động, chưa xem"; sửa điểm hay cờ thì dấu vân lệch. Không nằm trong bản chụp hoàn tác: hoàn tác về đúng dấu vân thì tính lại.
+        self.auto: dict[str, dict[int, tuple]] = {l: {} for l in EYES}
         # nhãn mắt -> mã nội bộ ổn định của mắt (có cả khi chưa có ID). Giao diện gắn ẩn riêng / khoá / Pinned vào mã này nên chúng đi
         # theo đúng mắt khi chỉ số người dịch (xoá người giữa), khi đổi label và khi hoàn tác / làm lại (mã nằm trong bản chụp hoàn tác).
         self.eye_uid: dict[str, int] = {l: next(_EYE_UIDS) for l in EYES}
@@ -92,6 +107,7 @@ class Session:
     obj_ids = _layer_attr("obj_ids")
     kind = _layer_attr("kind")
     shape_ids = _layer_attr("shape_ids")
+    auto = _layer_attr("auto")
     eye_uid = _layer_attr("eye_uid")
     _segments = _layer_attr("segments")
 
@@ -662,6 +678,147 @@ class Session:
             self.cur = min(self.cur, len(self.layers) - 1)
         self.recompute()
 
+    # ---- tạo shape: chép, điền đoạn; xem lại shape điền tự động; Occluded cả đoạn (chỉ mắt kiểu shape) ----
+    def _shape_eye(self, label: str, first: int, last: int) -> None:
+        """Điều kiện chung của ba lệnh: không ở chế độ QC, `label` là mắt kiểu shape, khoảng frame [first, last] hợp lệ."""
+        self._guard_qc()
+        if self.kind[label] != "shape":
+            raise ValueError(SHAPE_ONLY_MSG)
+        if first > last:
+            raise ValueError(RANGE_MSG)
+        if not (0 <= first and last < self.n_frames):
+            raise ValueError(f"frame ngoài phạm vi 0–{self.n_frames - 1}")
+
+    def _put_eye(self, frame: int, label: str, pts: dict[int, Point], flags: dict[int, str]) -> None:
+        """Ghi mắt `label` ở `frame` thành shape: 8 điểm lấy từ `pts` và cờ `flags`; cờ và ước lượng cũ của mắt đó ở frame này bị bỏ (như `pin_eye`).
+        Không đẩy hoàn tác và không tính lại: nơi gọi làm."""
+        ids = EYES[label].ids
+        self.pins.setdefault(frame, {}).update({i: tuple(pts[i]) for i in ids})
+        for store in (self.flags, self.estimates):
+            if frame in store:
+                store[frame] = {i: v for i, v in store[frame].items() if i not in ids}
+                if not store[frame]:
+                    del store[frame]
+        if flags:
+            self.flags.setdefault(frame, {}).update(flags)
+
+    def _fingerprint(self, label: str, frame: int) -> tuple:
+        """Dấu vân của shape `label` ở `frame`: toạ độ (x0, y0, x1, y1, ...) và cờ ("" | "occluded" | "outside") của 8 điểm theo thứ tự id."""
+        ids = EYES[label].ids
+        pts, flags = self.pins[frame], self.flags.get(frame, {})
+        return tuple(float(c) for i in ids for c in pts[i]), tuple(flags.get(i, "") for i in ids)
+
+    def copy_nearest_shape(self, label: str, frame: int) -> int:
+        """Chép 8 điểm và cờ của shape gần nhất (theo |g − frame|, bằng nhau thì lấy phía trước) của mắt `label` (người đang chọn) sang `frame`
+        thành shape mới có ID mới; mắt kia không đổi. Một bước hoàn tác. Trả frame nguồn.
+        ValueError: mắt không phải shape (`SHAPE_ONLY_MSG`), frame đã có shape của mắt đó, mắt đó chưa có shape nào để chép."""
+        self._shape_eye(label, frame, frame)
+        if self.has_shape(label, frame):
+            raise ValueError(f"frame này đã có shape của {label}")
+        have = self._shape_frames(label)
+        if not have:
+            raise ValueError(f"{label} chưa có shape nào để chép")
+        src = min(have, key=lambda g: (abs(g - frame), g > frame))
+        ids = EYES[label].ids
+        self._push_undo()
+        self._put_eye(frame, label, self.pins[src], {i: k for i, k in self.flags.get(src, {}).items() if i in ids})
+        self.auto[label].pop(frame, None)                    # shape do người chép không phải shape điền tự động
+        self.touched[label] = time.time()
+        self.recompute()
+        return src
+
+    def fill_gap(self, label: str, first: int, last: int) -> FillResult:
+        """Điền đoạn thiếu [first, last] của mắt `label` (người đang chọn) bằng bám tiến (`track_forward`) từ shape ngay trước `first`: frame
+        không bị xoá và chưa có shape thì có shape mới (dời cả mắt theo kết quả bám, giữ dáng và cờ của nguồn). Frame đã xoá và frame đã có
+        shape bị bỏ qua; gặp frame có độ khớp < `MATCH_FLAG` thì dừng ở đó (không tạo shape ở frame đó). Nguồn là frame không bị xoá đứng ngay
+        trước `first` (lùi qua frame đã xoá) và phải có shape, không thì ValueError(`FILL_NO_SOURCE_MSG`).
+        Tính xong mới ghi: có tạo ít nhất một shape thì đúng một bước hoàn tác và các frame đó vào danh sách "điền tự động, chưa xem"
+        (`unreviewed`); không tạo được frame nào, hay đọc ảnh lỗi (lỗi được ném lên), thì phiên không đổi."""
+        self._shape_eye(label, first, last)
+        src = first - 1
+        while src >= 0 and src in self.deleted:
+            src -= 1
+        if src < 0 or not self.has_shape(label, src):
+            raise ValueError(FILL_NO_SOURCE_MSG)
+        ids = EYES[label].ids
+        sub = {i: self.pins[src][i] for i in ids}
+        by_frame = {r.frame: r for r in track_forward(self.gray, src, last + 1, sub)}
+        created: list[int] = []
+        stopped_at, score = None, None
+        for f in range(first, last + 1):
+            if f in self.deleted or self.has_shape(label, f):
+                continue
+            if by_frame[f].scores[label] < MATCH_FLAG:
+                stopped_at, score = f, by_frame[f].scores[label]
+                break
+            created.append(f)
+        if created:
+            flags = {i: k for i, k in self.flags.get(src, {}).items() if i in ids}
+            self._push_undo()
+            for f in created:
+                self._put_eye(f, label, by_frame[f].points, flags)
+                self.auto[label][f] = self._fingerprint(label, f)
+            self.touched[label] = time.time()
+            self.recompute()
+        return FillResult(created, stopped_at, score)
+
+    def unreviewed(self, label: str) -> list[int]:
+        """Frame có shape điền tự động mà người dùng chưa xem (người đang chọn): shape còn đó và điểm, cờ vẫn đúng như lúc điền. Sửa điểm hay
+        cờ, hay xoá shape thì frame ra khỏi danh sách; hoàn tác về đúng như lúc điền thì lại vào."""
+        return sorted(f for f, mark in self.auto[label].items() if self.has_shape(label, f) and self._fingerprint(label, f) == mark)
+
+    def mark_reviewed(self, label: str, frames: Iterable[int]) -> None:
+        """Đánh dấu đã xem các frame (bỏ khỏi `unreviewed`). Không phải sửa nhãn: không có bước hoàn tác, nhưng đánh dấu phiên có thay đổi để lưu."""
+        gone = [f for f in frames if self.auto[label].pop(f, None) is not None]
+        if gone:
+            self.dirty = True
+
+    def shape_run(self, label: str, frame: int) -> tuple[int, int]:
+        """Đoạn các frame có shape của mắt `label` liền nhau chứa `frame` (frame đã xoá cắt đoạn); frame không có shape hay đã xoá thì (frame, frame)."""
+        if not self.has_shape(label, frame) or frame in self.deleted:
+            return frame, frame
+        lo = hi = frame
+        while self.has_shape(label, lo - 1) and lo - 1 not in self.deleted:
+            lo -= 1
+        while self.has_shape(label, hi + 1) and hi + 1 not in self.deleted:
+            hi += 1
+        return lo, hi
+
+    def set_occluded_range(self, label: str, pids: list[int] | None, first: int, last: int, on: bool) -> tuple[int, int]:
+        """Đặt (`on`) hoặc bỏ Occluded cho các điểm `pids` (None: cả 8 điểm) của mắt `label` ở mọi frame trong [first, last] mà mắt đó có shape;
+        frame không có shape bị bỏ qua. Điểm đang Outside không đổi và được đếm vào số bỏ qua (phiên chỉ giữ một cờ mỗi điểm). Bỏ Occluded chỉ
+        bỏ `occluded`. Trả (số shape có thay đổi, số điểm bỏ qua vì Outside); không có thay đổi thì không có bước hoàn tác, có thì đúng một."""
+        self._shape_eye(label, first, last)
+        ids = EYES[label].ids
+        points = list(ids) if pids is None else list(pids)
+        bad = [i for i in points if i not in ids]
+        if bad:
+            raise ValueError(f"điểm {bad} không thuộc mắt {label}")
+        todo: list[tuple[int, list[int]]] = []
+        skipped = 0
+        for f in range(first, last + 1):
+            if not self.has_shape(label, f):
+                continue
+            have = self.flags.get(f, {})
+            skipped += sum(1 for i in points if have.get(i) == "outside")
+            change = [i for i in points if have.get(i) != "outside" and (have.get(i) == "occluded") != on]
+            if change:
+                todo.append((f, change))
+        if not todo:
+            return 0, skipped
+        self._push_undo()
+        for f, change in todo:
+            cur = self.flags.setdefault(f, {})
+            for i in change:
+                if on:
+                    cur[i] = "occluded"
+                else:
+                    del cur[i]
+            if not cur:
+                del self.flags[f]
+        self.touched[label] = time.time()
+        return len(todo), skipped
+
     def end_eye_here(self, label: str, frame: int) -> None:
         """Kết thúc nhãn của `label` từ `frame` trở đi: đánh Outside cả 8 điểm của mắt đó tại `frame`; cờ chép sang các frame sau. Frame chưa là
         keyframe của mắt đó thì thành keyframe của RIÊNG mắt đó (nhận nhãn đang hiển thị), mắt kia không đổi, như CVAT. Một bước hoàn tác.
@@ -955,6 +1112,9 @@ class Session:
             if shapes:
                 item["kind"] = dict(L.kind)
                 item["shape_ids"] = {l: {str(f): v for f, v in d.items()} for l, d in L.shape_ids.items()}
+                auto = {l: {str(f): [list(mark[0]), list(mark[1])] for f, mark in d.items()} for l, d in L.auto.items() if d}
+                if auto:
+                    item["auto"] = auto                          # shape điền tự động và dấu vân lúc điền (`unreviewed`); không có thì không ghi khoá
             layers.append(item)
         out = {"version": 3 if shapes else 2, "frames": self.n_frames, "names": [self.names[0], self.names[-1]], "deleted": sorted(self.deleted),
                "cur": self.cur, "next_id": self.next_id, "layers": layers}
@@ -996,6 +1156,8 @@ class Session:
             L.kind = {l: "shape" if self.adopted else (kinds.get(l) if kinds.get(l) in KINDS else "track") for l in EYES}   # phiên đã nạp: toàn shape
             sh = p.get("shape_ids") or {}
             L.shape_ids = {l: {int(f): int(v) for f, v in (sh.get(l) or {}).items()} for l in EYES}
+            auto = p.get("auto") or {}
+            L.auto = {l: {int(f): (tuple(float(c) for c in mark[0]), tuple(mark[1])) for f, mark in (auto.get(l) or {}).items()} for l in EYES}
         self.cur = min(int(d.get("cur", 0)), len(self.layers) - 1)
         saved = d.get("cvat")
         if self.cvat is not None and isinstance(saved, dict) and saved.get("job") == self.cvat.get("job"):
