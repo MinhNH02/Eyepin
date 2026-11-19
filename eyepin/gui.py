@@ -37,6 +37,7 @@ from . import cvatlogin, theme
 from .cvatapi import CvatError
 from .gui_cvat import CvatMixin, edit_command, net_safe
 from .gui_frames import FramesMixin
+from .gui_jobissues import JobIssuesMixin
 from .gui_login import FrontDoor, LoginMixin
 from .gui_objects import LayerSet, ObjectSet, ObjectsMixin
 from .gui_report import ReportMixin
@@ -143,7 +144,7 @@ DRAG_MIN_PX = 3                                  # kéo điểm / cả mắt: ch
 MOUSE_SPEED_MIN, MOUSE_SPEED_MAX = 0.1, 3.0       # độ nhạy chuột khi kéo: 1 = như cũ, nhỏ hơn = chậm hơn
 
 
-class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
+class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin, JobIssuesMixin):
     @staticmethod
     def _set_window_icon(root: tk.Tk) -> None:
         """Icon cửa sổ và thanh tác vụ là ảnh eyepin.png. Thiếu file hoặc lỗi thì bỏ qua, tool vẫn mở bình thường."""
@@ -212,6 +213,7 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
         self._auto_key = None
         self._init_cvat()
         self._init_report()
+        self._init_job_issues()
         self._build()
         self.sync_look_vars()
         self._bind_keys()
@@ -2399,8 +2401,13 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin):
 
     def on_list(self, _):
         i = self._issue_selected()
-        if i is not None and i < len(self.items) and self.items[i] is not None:
+        if i is None or i >= len(self.items):
+            return
+        if self.items[i] is not None:
             self.go(self.items[i])
+        elif i < len(self.issue_rows) and self.issue_rows[i][0] == "cvat":      # issue CVAT (hoặc dòng lỗi tải) không có frame để nhảy tới: nói lý do
+            self.notice = self.job_issue_unjumpable_notice()
+            self.refresh(light=True)
 
     def on_timeline(self, e):
         if self.s:

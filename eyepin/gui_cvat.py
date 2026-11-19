@@ -87,7 +87,8 @@ class CvatMixin:
         self._menu = None
 
     def _cvat_menu_items(self, menu):
-        """Bốn mục menu: Mở từ CVAT…, Gửi lên CVAT, Xoá nhãn mắt cũ và gán lại… (hai mục này bật/tắt theo trạng thái phiên), Báo cáo issue CVAT…."""
+        """Năm mục menu: Mở từ CVAT…, Gửi lên CVAT, Xoá nhãn mắt cũ và gán lại… (hai mục này bật/tắt theo trạng thái phiên), Báo cáo issue CVAT…,
+        Tải lại issue CVAT."""
         self._menu = menu
         menu.add_command(label="Mở từ CVAT…", command=self.open_cvat)
         menu.add_command(label="Gửi lên CVAT", command=self.send_cvat)
@@ -95,6 +96,7 @@ class CvatMixin:
         menu.add_command(label="Xoá nhãn mắt cũ và gán lại…", command=self.qc_clear)
         self._cvat_menu["clear"] = menu.index("end")
         menu.add_command(label="Báo cáo issue CVAT…", command=self.show_issue_report)      # sau hai mục trên để chỉ số của chúng không đổi
+        menu.add_command(label="Tải lại issue CVAT", command=self.load_job_issues)           # issue của job đang mở, nhóm cuối của tab Issues
         menu.add_separator()
         menu.add_command(label="Đăng xuất…", command=self.logout)          # LoginMixin (gui_login.py): dọn rồi về màn đăng nhập
         menu.add_command(label="Thoát EyePin", command=lambda: self.on_close())   # như nút X: hỏi lưu/bận rồi đóng, không xoá gì
@@ -550,8 +552,10 @@ class CvatMixin:
     def _open_extras(self):
         """Gọi khi một phiên vừa được mở xong. Job đã có nhãn mắt mà không nạp được thì vào chế độ QC (tự quét, mở tab Issues, nêu lý do không nạp
         được); phiên đã nạp shape mắt thì báo số shape đã nạp, trừ khi vừa khôi phục từ file phiên (`try_restore` đã báo). Thông báo nối sau
-        thông báo đang có (`try_restore` chạy trước)."""
+        thông báo đang có (`try_restore` chạy trước). Mọi phiên job CVAT (đã nạp, QC hay gán từ đầu) còn tự tải issue của job (`load_job_issues`, luồng nền);
+        phiên khác thì nhóm issue CVAT của phiên trước bị bỏ."""
         s = self.s
+        self.load_job_issues()                          # trước `_enter_qc_view`: bảng Issues không hiện nhóm của job trước
         intro = ""
         if s is not None and s.qc:
             self._enter_qc_view()

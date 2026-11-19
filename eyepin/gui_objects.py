@@ -640,7 +640,8 @@ class ObjectsMixin:
 
     def _issues_signature(self) -> tuple:
         """Mọi thứ làm bảng Issues đổi mà không đi qua `_fill_issues`: đoạn quay đầu, đoạn thiếu nhãn, đoạn shape chưa xem của mọi người, và số
-        thứ tự lần tải issue CVAT (Task 8, chưa có thì 0). Vẽ lại chỉ dựng lại bảng khi chữ ký này đổi, để không mất dòng đang chọn."""
+        thứ tự lần tải issue CVAT (`JobIssuesMixin._job_issues_seq`; không có mixin đó thì 0). Vẽ lại chỉ dựng lại bảng khi chữ ký này đổi, để không mất
+        dòng đang chọn."""
         if not self.s:
             return ()
         return (self._turns_signature(), tuple(gaps.find_gaps(self.s)), tuple(self._auto_runs()), getattr(self, "_job_issues_seq", 0))
