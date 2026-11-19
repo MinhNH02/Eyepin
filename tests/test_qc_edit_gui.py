@@ -136,6 +136,15 @@ class TestRows(QcEditCase):
         self.assertEqual(app.f, 3)
         self.assertIn("Không còn vấn đề nào", app.notice)
 
+    def test_double_click_no_label_row_explains(self):
+        app = self.open_eyes(mattrai=ALL, matphai=())
+        app.go(3)
+        self.pick(app, 0)                                                         # dòng "matphai chưa có nhãn nào"
+        app.notice = ""
+        app.on_list(None)
+        self.assertEqual(app.f, 3)                                                # không có frame để nhảy tới
+        self.assertEqual(app.notice, "Mắt này chưa có nhãn nào: vẽ một shape của nó (phím N) rồi mới điền được.")
+
     def test_step_visits_gap_and_auto_rows(self):
         app = self.open_eyes(mattrai=(0, 1, 2, 3, 4, 7), matphai=(0, 1, 2, 3, 4, 5, 6))   # mattrai thiếu 5–6, matphai thiếu 7
         self.assertEqual(self.texts(app), [GAP_56, "Thiếu nhãn matphai · frame 7 (1 frame)"])
@@ -275,6 +284,31 @@ class TestCommands(QcEditCase):
         self.pick(app, 0)
         app.fill_gap_here()
         self.assertEqual(app.notice, "matphai chưa có nhãn nào: vẽ một shape của mắt đó trước rồi mới điền được.")
+
+    def test_missing_eye_uses_selected_persons_layer(self):
+        """`_selected` đổi người đang chọn theo thẻ chọn trong panel: mắt thiếu phải tính cho người đó, không cho người cũ."""
+        app = self.open_eyes()                                                    # người 1: mattrai thiếu 5–6, matphai đủ
+        s = app.s
+        s.add_layer()                                                             # người 2: mattrai ở frame 5, matphai chỉ ở frame 4
+        s.pin_eye(5, "mattrai", {i: T.pins_at(5)[i] for i in EYES["mattrai"].pins})
+        s.pin_eye(4, "matphai", {i: T.pins_at(4)[i] for i in EYES["matphai"].pins})
+        s.select_layer(0)
+        app.go(5)
+        iid = app._iid("eye", "mattrai", 1)
+        self.assertTrue(app.tree.exists(iid))
+        app.tree.selection_set(iid)                                               # thẻ mattrai của người 2 đang chọn trong panel...
+        s.select_layer(0)                                                         # ...còn người đang chọn của phiên là người 1 (lệch nhau)
+        self.assertEqual(app.tree.selection(), (iid,))
+        self.assertEqual(s.cur, 0)
+        self.assertEqual(app._missing_shape_eye(), "matphai")                     # người 2 có mattrai ở frame 5: chỉ matphai còn thiếu
+        self.assertEqual(s.cur, 1)
+        s.select_layer(0)
+        app.copy_nearest_shape()
+        self.assertEqual(app.notice, "Đã chép shape matphai từ frame 4 sang frame 5.")
+        self.assertEqual(s.cur, 1)
+        self.assertTrue(s.has_shape("matphai", 5))                                # chép cho người 2
+        s.select_layer(0)
+        self.assertFalse(s.has_shape("mattrai", 5))                               # người 1 không đổi
 
     def test_fill_stops_on_bad_match_and_says_where(self):
         app = self.open_eyes(mattrai=(0, 1, 2, 3, 4), matphai=ALL)                # thiếu 5–7

@@ -2415,6 +2415,9 @@ class App(ObjectsMixin, FramesMixin, CvatMixin, LoginMixin, ReportMixin, JobIssu
         elif i < len(self.issue_rows) and self.issue_rows[i][0] == "cvat":      # issue CVAT (hoặc dòng lỗi tải) không có frame để nhảy tới: nói lý do
             self.notice = self.job_issue_unjumpable_notice()
             self.refresh(light=True)
+        elif i < len(self.issue_rows) and self.issue_rows[i][0] == "gap" and self.issue_rows[i][1].first < 0:     # mắt chưa có shape nào: không có frame để nhảy tới
+            self.notice = "Mắt này chưa có nhãn nào: vẽ một shape của nó (phím N) rồi mới điền được."
+            self.refresh(light=True)
 
     def on_timeline(self, e):
         if self.s:

@@ -864,10 +864,10 @@ class ObjectsMixin:
         chọn trong panel nếu nó nằm trong số đó, không thì mắt duy nhất còn thiếu, không thì (cả hai cùng thiếu) mattrai. Thẻ của mắt shape chỉ hiện ở
         frame có shape, nên ở frame thiếu thường không chọn được mắt đang thiếu. None khi không mắt nào thiếu."""
         s = self.s
+        chosen = self._selected()[0]                              # trước: nó có thể đổi người đang chọn (thẻ của người khác), mắt thiếu tính cho người đó
         missing = [l for l in EYES if s.eye_kind(l) == "shape" and not s.has_shape(l, self.f)]
         if not missing:
             return None
-        chosen = self._selected()[0]
         return chosen if chosen in missing else "mattrai" if "mattrai" in missing else missing[0]
 
     @edit_command
