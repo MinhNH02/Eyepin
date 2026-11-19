@@ -14,6 +14,7 @@ import numbers
 import os
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 
@@ -38,6 +39,8 @@ SHAPE_KEY_MSG = "shape không có keyframe"
 SHAPE_OUTSIDE_MSG = "shape không có Outside cho cả mắt; đánh Outside từng điểm hoặc xoá shape"
 SHAPE_PIN_MSG = ("frame này có shape: bỏ cả frame ghim sẽ xoá luôn shape đó; bỏ keyframe của từng mắt track (K) "
                  "hoặc xoá shape (Del)")
+ADOPTED_TRACK_MSG = ("Job này đã nạp shape mắt từ CVAT nên chỉ vẽ được shape "
+                     "(track mắt sẽ làm job thành chỉ xem ở lần mở sau).")
 KINDS = ("track", "shape")
 
 _EYE_UIDS = itertools.count(1)     # mã nội bộ của từng mắt (Layer.eye_uid): tăng mãi, không dùng lại, kể cả giữa các phiên
@@ -63,7 +66,8 @@ class Layer:
         self.need_pin: list[int] = []
         self.obj_ids: dict[str, int] = {}                           # nhãn mắt -> ID đối tượng (chỉ mắt kiểu track)
         # nhãn mắt -> "track" | "shape". Mắt shape: mỗi frame trong `pins` có đủ 8 điểm của nó là một shape độc lập, không bám, không keyframe;
-        # cờ và ước lượng ở frame đó là của chính shape đó. Kiểu cố định khi mắt còn nhãn; mắt không còn nhãn nào thì về "track".
+        # cờ và ước lượng ở frame đó là của chính shape đó. Kiểu cố định khi mắt còn nhãn; mắt không còn nhãn nào thì về "track"
+        # (phiên đã nạp shape từ CVAT, `Session.adopted`: về "shape").
         self.kind: dict[str, str] = {l: "track" for l in EYES}
         self.shape_ids: dict[str, dict[int, int]] = {l: {} for l in EYES}   # nhãn mắt -> {frame: ID của shape ở frame đó}
         self.segments: dict = {}                                    # đoạn bám đã tính (bộ nhớ đệm)
@@ -105,6 +109,7 @@ class Session:
         self.layers: list[Layer] = [Layer()]                 # các bộ đối tượng (nhiều người); self.cur là bộ đang chọn
         self.cur = 0
         self.qc = False                                      # True: job đã có nhãn mắt, chỉ xem (chỉ nơi gọi chọn CVAT mới bật)
+        self.adopted = False                                 # True: job đã nạp shape mắt có sẵn (`adopt`): mọi mắt của phiên là shape, không vẽ được track
         self.cvat: dict | None = None                        # {"job", "updated"} khi mở từ một job CVAT (cvatsource.open_job đặt sau khi tạo)
         self.base_format: str | None = None                  # định dạng nền khi gửi lên CVAT / định dạng hiện nhãn mắt (cũng do open_job đặt)
         self.display_format: str | None = None
@@ -669,13 +674,16 @@ class Session:
         chỉ kiểm hình (ValueError nếu không giống một mắt); không biến nhãn do tool tính của mắt kia ở frame này thành keyframe, như vẽ
         một skeleton trong CVAT.
         `kind` ("track" | "shape"): mắt chưa có nhãn nào thì nhận kiểu đó; None thì giữ kiểu đang có. Mắt đang có nhãn mà `kind` khác kiểu
-        hiện tại thì ValueError và phiên không đổi gì. Mắt shape: ghim ở `frame` là shape ở frame đó (frame đã có shape thì vẽ đè, giữ ID)."""
+        hiện tại thì ValueError và phiên không đổi gì. Mắt shape: ghim ở `frame` là shape ở frame đó (frame đã có shape thì vẽ đè, giữ ID).
+        Phiên đã nạp shape (`adopted`): mọi mắt là shape; `kind="track"` thì ValueError(`ADOPTED_TRACK_MSG`)."""
         self._guard_qc()
         spec = EYES[label]
         cur = self.kind[label]
         kind = cur if kind is None else kind
         if kind not in KINDS:
             raise ValueError(f"kiểu nhãn không hợp lệ: {kind!r} (cần 'track' hoặc 'shape')")
+        if self.adopted and kind == "track":
+            raise ValueError(ADOPTED_TRACK_MSG)
         if kind != cur and self._eye_has_labels(label):
             raise ValueError(f"{label} của người này đang là {cur}; xoá nhãn đó hoặc thêm người mới (+) để vẽ kiểu khác")
         validate_four(spec, four)
@@ -809,10 +817,11 @@ class Session:
 
     def _assign_ids(self) -> None:
         """Cấp ID cho đối tượng mới của Layer đang chọn. Mắt track: một ID cho cả mắt khi nó có keyframe đầu tiên. Mắt shape: mỗi shape một ID,
-        cấp theo frame tăng dần; mục của frame không còn shape bị bỏ (ID đó không dùng lại). Mắt không còn nhãn nào thì kiểu về "track"."""
+        cấp theo frame tăng dần; mục của frame không còn shape bị bỏ (ID đó không dùng lại). Mắt không còn nhãn nào thì kiểu về "track"
+        (phiên đã nạp shape từ CVAT: về "shape", vì phiên đó không có track)."""
         for label, spec in EYES.items():
             if not self._eye_has_labels(label):
-                self.kind[label] = "track"
+                self.kind[label] = "shape" if self.adopted else "track"
             if self.kind[label] == "shape":
                 self.obj_ids.pop(label, None)                    # mắt shape không có ID của cả mắt
                 have = self._shape_frames(label)
@@ -946,6 +955,8 @@ class Session:
         if self.cvat is not None:
             out["cvat"] = dict(self.cvat)                        # mốc cập nhật của job lúc bắt đầu làm việc (để biết CVAT có bị sửa không)
             out["unsent"] = bool(self.unsent)                    # còn công chưa gửi lên CVAT (Đăng xuất dựa vào đây để hỏi trước khi xoá file phiên)
+        if self.adopted:
+            out["adopted"] = True                                # không có khoá này khi False: file của phiên không nạp giữ nguyên dạng cũ
         return out
 
     def load_state(self, d: dict) -> None:
@@ -976,7 +987,7 @@ class Session:
             L.estimates = {int(f): {int(i): r for i, r in es.items()} for f, es in p.get("estimates", {}).items()}
             L.obj_ids = {k: int(v) for k, v in p.get("ids", {}).items()}
             kinds = p.get("kind") or {}                                 # bản 1, 2 không có: toàn track
-            L.kind = {l: (kinds.get(l) if kinds.get(l) in KINDS else "track") for l in EYES}
+            L.kind = {l: "shape" if self.adopted else (kinds.get(l) if kinds.get(l) in KINDS else "track") for l in EYES}   # phiên đã nạp: toàn shape
             sh = p.get("shape_ids") or {}
             L.shape_ids = {l: {int(f): int(v) for f, v in (sh.get(l) or {}).items()} for l in EYES}
         self.cur = min(int(d.get("cur", 0)), len(self.layers) - 1)
@@ -1106,11 +1117,40 @@ class Session:
         self.qc = True
         return True
 
+    def adopt(self, shapes) -> None:
+        """Nạp shape mắt có sẵn của job (từ `adopt.eye_shapes` / `adopt.shapes_from_ann`, chỉ khi `adopt.check` rỗng) thành nhãn của phiên, thay cho chế
+        độ QC: từ đây mọi mắt của phiên là shape (`adopted`). Mỗi phần tử cần `label`, `frame` (chỉ số EyePin), `points` (đủ 8 điểm) và `flags`; điểm và cờ
+        vào phiên đúng nguyên văn, không suy lại, không làm tròn. Một người, mỗi shape một ID; `ann` bỏ nhãn mắt (nhãn khác giữ nguyên); phiên coi như
+        vừa mở: không có gì để hoàn tác, không có gì chưa lưu hay chưa gửi. Phiên đã có ghim ở bất kỳ người nào thì ValueError và không đổi gì."""
+        if any(L.pins for L in self.layers):
+            raise ValueError("Phiên đã có nhãn nên không nạp được")
+        self.adopted = True                                  # trước tiên: `_assign_ids` không được đưa mắt chưa có shape về track
+        self.layers, self.cur = [Layer()], 0
+        layer = self.layers[0]
+        layer.kind = {l: "shape" for l in EYES}
+        for sh in shapes:
+            layer.pins.setdefault(sh.frame, {}).update({i: tuple(p) for i, p in sh.points.items()})
+            if sh.flags:
+                layer.flags.setdefault(sh.frame, {}).update(sh.flags)
+        self._assign_ids()
+        self.ann = qc.without_eyes(self.ann)
+        self.qc = False
+        self.findings = []
+        self._old_eyes = None
+        self._undo.clear()
+        self._redo.clear()
+        self.recompute()
+        self.dirty = False
+        self.unsent = False
+
     # ---- nhiều bộ đối tượng (nhiều người) ----
     def add_layer(self) -> int:
         """Thêm một bộ đối tượng trống (người mới) và chọn nó; ghim vào đó sẽ cấp ID mới. Hoàn tác được. Trả về chỉ số bộ."""
         self._push_undo()
-        self.layers.append(Layer())
+        layer = Layer()
+        if self.adopted:
+            layer.kind = {l: "shape" for l in EYES}              # phiên đã nạp shape: người mới cũng chỉ vẽ shape
+        self.layers.append(layer)
         self.cur = len(self.layers) - 1
         return self.cur
 
@@ -1159,8 +1199,18 @@ class Session:
         return out or None
 
     def run_scan(self, **kw) -> list[Finding]:
-        self.findings = scan(self.ann, self.n_frames, width=self.width, height=self.height, **kw)
+        """Quét nhãn mắt. Phiên đã nạp shape (`adopted`) quét shape của chính phiên (`ann` đã bỏ nhãn mắt); không thì quét `ann` như cũ."""
+        ann = self._session_annotations() if self.adopted else self.ann
+        self.findings = scan(ann, self.n_frames, width=self.width, height=self.height, **kw)
         return self.findings
+
+    def _session_annotations(self) -> Annotations:
+        """`ann` cộng shape mắt của phiên (`build_shapes`), để quét nhãn đang sửa. Nhiều người cùng nhãn cùng frame thì lấy shape đứng trước trong
+        `build_shapes` (ID nhỏ hơn, tức người vẽ trước)."""
+        shapes: dict[str, dict[int, EyeKey]] = {l: {} for l in EYES}
+        for sh in self.build_shapes():
+            shapes[sh.label].setdefault(sh.key.frame, sh.key)
+        return replace(self.ann, shapes=shapes)
 
     # ---- xuất ----
     def build_tracks(self, tol: float = KEYFRAME_TOL) -> dict[str, EyeTrack]:
