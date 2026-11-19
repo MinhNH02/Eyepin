@@ -38,6 +38,7 @@ ACTIONS: tuple[Action, ...] = (
     Action("open_cvat", G_GEN, "Mở một job từ CVAT trên máy (đăng nhập, chọn task và job)", (), "", "chỉ CVAT localhost; gán phím trong Cài đặt nếu cần"),
     Action("send_cvat", G_GEN, "Gửi lên CVAT (thay toàn bộ nhãn của job đang mở, có hỏi trước và đối chiếu sau)", (), "", "tắt khi job ở chế độ QC"),
     Action("qc_clear", G_GEN, "Xoá nhãn mắt cũ và gán lại (rời chế độ QC)", (), "", "CVAT chưa đổi gì cho tới khi gửi"),
+    Action("issue_report", G_GEN, "Báo cáo issue CVAT (xem issue của một task và xuất Excel)", (), "", "chỉ CVAT localhost; gán phím trong Cài đặt nếu cần"),
     Action("remove_annotations", G_GEN, "Xoá toàn bộ nhãn (Remove annotations)", (), "", "có hộp xác nhận, hoàn tác được"),
     Action("finish_job", G_GEN, "Hoàn tất job (lưu và xuất)", (), "", "mục Finish the job trong Menu"),
     Action("cancel", G_GEN, "Huỷ chế độ đang làm (ghim dở)", ("<Escape>",), "Esc"),
@@ -118,7 +119,8 @@ DEFAULT_SETTINGS = {
     "workspace": {"remember_display": True, "autosave": True, "autosave_min": 2, "text_always": False, "text_content": ["id", "label", "source"],
                   "font_size": 1.0, "focus_padding": 60, "zoom_step": 1.25, "mouse_speed": 1.0,
                   "show_neighbors": True,                                   # tab "Frame lân cận" ở panel phải (tắt: gỡ tab, không tính ảnh nhỏ)
-                  "remember_login_hours": 8},                               # nhớ đăng nhập CVAT bao nhiêu giờ (0 = không nhớ, tối đa 72); xem cvatlogin.py
+                  "remember_login_hours": 8,                                # nhớ đăng nhập CVAT bao nhiêu giờ (0 = không nhớ, tối đa 72); xem cvatlogin.py
+                  "report_dir": ""},                                        # thư mục lần xuất báo cáo issue trước (rỗng = Documents); phải nằm trong "workspace": load_settings bỏ khoá mức ngoài không có trong mặc định
     "display": {},
     "shortcuts": {},
     "cvat": {"url": "http://localhost:8080", "user": ""},        # chỉ địa chỉ và tên đăng nhập gần nhất; mật khẩu và khoá không bao giờ vào file này (khoá nhớ mã hoá ở cvat_login.bin)
