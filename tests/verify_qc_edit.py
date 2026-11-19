@@ -8,7 +8,8 @@ vài điểm Occluded, một điểm Outside, và hai frame thiếu shape mattra
   Q1  `adopt.check` rỗng với dữ liệu thật; số shape nạp và toạ độ, cờ khớp file đã nhập
   Q2  shape chưa ai đụng trùng JSON trước khi gửi (không quá 0,01 px, cờ), `count_changes` đếm đúng "giữ" cả job
   Q3  shape sửa và thêm đúng, tổng số shape đúng, shape giữ nguyên còn nguyên, cờ Occluded cả đoạn đúng (điểm Outside không đổi), không có track;
-      Q3b bản xuất "CVAT for video" thật: `cvatsync._compare` không báo lệch (đúng phép kiểm `cvatsync.send` chạy sau khi gửi)
+      Q3b bản xuất "CVAT for video" thật: `cvatsync._compare` không báo lệch (đúng phép kiểm `cvatsync.send` chạy sau khi gửi);
+      Q3c `adopt.check` trên JSON thật SAU khi gửi rỗng (mở lại job thì EyePin lại nạp được, không rơi vào chế độ chỉ xem)
   Q4  issue đã tạo còn sau import (đếm theo mã issue), cả sau khi gửi lẫn sau khi khôi phục
   Q5  (thông tin) tạo issue có đổi `updated_date` của job không (ảnh hưởng cảnh báo "job đã bị sửa" của `cvatsync.prepare`)
   Q6  bản chụp khôi phục (`cvatsync.adopted_snapshot`) import lại thì JSON về đúng shape mắt lúc trước khi gửi, kể cả điểm Outside, không có track
@@ -256,7 +257,7 @@ def main():
                 tb = tb.tb_next
             print("Lỗi không mong đợi: %s ở dòng %d" % (type(exc).__name__, tb.tb_lineno))
             results.append(False)
-        for code in ("Q1", "Q2", "Q3", "Q3b", "Q4", "Q6"):
+        for code in ("Q1", "Q2", "Q3", "Q3b", "Q3c", "Q4", "Q6"):
             if code not in printed:
                 verdict(code, False, "không kiểm được (dừng trước đó)")
     finally:
@@ -409,6 +410,10 @@ def run(wd, state):
     cmp_video = _compare(video, want_tracks, set(), nums, want_shapes, cap=False)
     verdict("Q3b", not cmp_video, "bản xuất video có %d track (CVAT đổi mỗi shape thành một track một frame, %d shape đã gửi); _compare %d chỗ lệch"
             % (sum(len(video.tracks[l]) for l in EYES), n + 1, len(cmp_video)))
+    deleted_after = {int(f) for f in sent_state["meta"].get("deleted_frames") or []}
+    reopen = adopt.check(aj2, labels, nums, deleted_after)          # mở lại job sau khi gửi: phải nạp lại được (không rơi vào chế độ chỉ xem)
+    verdict("Q3c", not reopen, "sau khi gửi, adopt.check trên JSON thật còn %d lý do: mở lại job %s%s"
+            % (len(reopen), "nạp lại được" if not reopen else "sẽ ở chế độ chỉ xem", "" if not reopen else " (" + " ".join(reopen) + ")"))
 
     # ---- khôi phục bằng bản chụp ----
     restore_path = os.path.join(wd, "snapshot.xml")
