@@ -18,7 +18,7 @@ from tkinter import filedialog, messagebox, ttk
 import cv2
 import numpy as np
 
-from . import cvatsync, qc
+from . import cvatsync, gaps, qc
 from .cvatapi import CvatClient, CvatError, LoginNeeded
 from .cvatsource import open_job
 from .geometry import EYES
@@ -567,7 +567,7 @@ class CvatMixin:
         elif s is not None and s.adopted and not self._just_restored:
             shapes = s.build_shapes()
             per_eye = ", ".join(f"{label} {sum(1 for sh in shapes if sh.label == label)}" for label in EYES)
-            missing = 0                                      # số đoạn thiếu nhãn (`gaps.find_gaps`, Task 4 nối vào)
+            missing = len([g for g in gaps.find_gaps(s) if g.first >= 0])      # số đoạn thiếu nhãn; mắt chưa có nhãn nào không tính là đoạn
             intro = f"Đã nạp {len(shapes)} shape mắt của job để sửa ({per_eye}); thiếu nhãn ở {missing} đoạn."
         if intro:
             self.notice = f"{self.notice} {intro}" if self.notice else intro

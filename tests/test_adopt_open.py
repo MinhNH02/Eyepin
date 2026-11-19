@@ -20,7 +20,7 @@ import test_tracking as T  # noqa: E402
 from test_cvatsource import IMAGES, Base, eye_shape_image, eye_track, xml_of  # noqa: E402
 
 N = G.N
-INTRO = "Đã nạp 2 shape mắt của job để sửa (mattrai 1, matphai 1); thiếu nhãn ở 0 đoạn."
+INTRO = "Đã nạp 2 shape mắt của job để sửa (mattrai 1, matphai 1); thiếu nhãn ở 4 đoạn."   # mattrai thiếu 0–1 và 3–7, matphai thiếu 0–4 và 6–7
 OLD_FILE = "Bỏ qua phiên lưu cũ (lưu khi job còn ở chế độ chỉ xem)."
 CHANGED = "\nJob đã bị sửa trên CVAT sau lúc lưu; khôi phục rồi gửi sẽ đè các thay đổi đó."
 CHANGED_NOTICE = " Chú ý: job đã bị sửa trên CVAT kể từ lần làm việc trước; gửi lên sẽ ghi đè các sửa đó."
@@ -124,6 +124,15 @@ class TestGuiOpen(AdoptGuiCase):
         self.assertEqual(app.qc_bar.winfo_manager(), "")                      # không có thanh QC
         self.assertTrue(app.cvat_send_allowed())
         self.assertEqual(app.adopt_asked, [])
+
+    def test_gui_notice_counts_gap_segments(self):
+        """K của thông báo là số đoạn thiếu nhãn: mattrai thiếu mỗi frame 3 (một đoạn); matphai chưa có nhãn nào nên không tính là đoạn."""
+        frames = [f for f in range(N) if f != 3]
+        self.serve(fake_job(shapes=[A.skeleton("mattrai", f) for f in frames],
+                            xml=xml_of(images="".join(eye_shape_image(f, "mattrai") for f in frames), job_size=N)))
+        app = self.make_app()
+        self.assertTrue(self.open_job(app).adopted)
+        self.assertIn("Đã nạp 7 shape mắt của job để sửa (mattrai 7, matphai 0); thiếu nhãn ở 1 đoạn.", app.notice)
 
     def test_gui_qc_notice_has_reason(self):
         self.serve(fake_job(tracks=[A.eye_track("mattrai", [0])], xml=xml_of(tracks=eye_track(37, "mattrai", [0, 2]), job_size=N)))

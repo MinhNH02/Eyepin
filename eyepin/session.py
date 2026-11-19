@@ -21,7 +21,7 @@ from collections import OrderedDict
 import cv2
 import numpy as np
 
-from . import cvatxml, headturn, qc
+from . import cvatxml, gaps, headturn, qc
 from .frames import DirSource, IMAGE_EXT
 from .cvatxml import Annotations, EyeKey, EyeShape, EyeTrack, PointState
 from .geometry import (EYES, HIDDEN_ERR_PX, Point, assign_roles, derive, hidden_neighbours, split_eyes,
@@ -312,7 +312,7 @@ class Session:
         return True
 
     FILTERS = {"all": "Tất cả frame", "pinned": "Frame ghim", "need": "Frame cần ghim", "flagged": "Frame có Occluded/Outside",
-               "red": "Cảnh báo đỏ", "yellow": "Cảnh báo vàng", "nolabel": "Frame chưa có nhãn"}
+               "red": "Cảnh báo đỏ", "yellow": "Cảnh báo vàng", "nolabel": "Frame chưa có nhãn", "missing": "Frame thiếu nhãn"}
 
     def matches(self, f: int, mode: str) -> bool:
         """Frame f có thoả bộ lọc `mode` không (xem FILTERS)."""
@@ -328,11 +328,16 @@ class Session:
             return any(fd.level == mode and fd.frame <= f <= fd.last for fd in self.findings)
         if mode == "nolabel":
             return self.points_at(f) is None
+        if mode == "missing":                                # frame có ít nhất một mắt shape còn thiếu (`gaps.missing_frames`)
+            return f in gaps.missing_frames(self)
         raise ValueError(mode)
 
     def next_match(self, f: int, step: int, mode: str) -> int | None:
         """Frame gần nhất theo hướng `step` (±1) thoả bộ lọc, không tính chính f."""
         rng = range(f + 1, self.n_frames) if step > 0 else range(f - 1, -1, -1)
+        if mode == "missing":                                # tính tập frame thiếu một lần thay vì mỗi frame một lần
+            missing = gaps.missing_frames(self)
+            return next((g for g in rng if g in missing), None)
         return next((g for g in rng if self.matches(g, mode)), None)
 
     def next_pin(self, f: int, step: int = 1) -> int | None:
